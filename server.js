@@ -23,6 +23,12 @@ const historicos = {};
 // Mapa LID → número real (preenchido quando recebemos mensagens com @lid)
 const lidParaNumero = {};
 
+// Mapa JID → paciente identificado por CPF (para @lid que não resolve por telefone)
+const pacientesIdentificados = {};
+
+// Mapa JID → aguardando CPF (true = bot perguntou o CPF e espera resposta)
+const aguardandoCpf = {};
+
 // ── FAQ Automático ────────────────────────────────────────────────────────────
 const FAQ = [
   { gatilhos:["horário","horario","que horas","quando abr","funciona","abre"], resposta:"🕐 Nossa UBS funciona de segunda a sexta, das 7h às 17h. Para emergências, ligue para o SAMU: 192." },
@@ -58,11 +64,10 @@ REGRAS: Linguagem simples. Máx 3 parágrafos. Nunca altere doses. Não confirme
 async function buscarPaciente(telefone) {
   try {
     const digits = telefone.replace(/\D/g,'');
-    // Tenta variações: com 55, sem 55, 11 dígitos, 10 dígitos
-    const num11 = digits.slice(-11);   // ex: 62985816375
-    const num10 = digits.slice(-10);   // ex: 9985816375 (sem DDD 6)
-    const num13 = '55' + num11;        // ex: 5562985816375
-    const num12 = '55' + num10;        // ex: 559985816375
+    const num11 = digits.slice(-11);
+    const num10 = digits.slice(-10);
+    const num13 = '55' + num11;
+    const num12 = '55' + num10;
 
     const res = await fetch(
       `${SUPA_URL}/rest/v1/farmabot_pacientes?or=(telefone.eq.${num11},telefone.eq.${num10},telefone.eq.${num13},telefone.eq.${num12})&limit=1`,
@@ -72,6 +77,22 @@ async function buscarPaciente(telefone) {
     return data?.[0] || null;
   } catch(e) {
     console.error('Erro buscarPaciente:', e.message);
+    return null;
+  }
+}
+
+async function buscarPacientePorCpf(cpf) {
+  try {
+    const cpfLimpo = cpf.replace(/\D/g,'');
+    if(cpfLimpo.length < 11) return null;
+    const res = await fetch(
+      `${SUPA_URL}/rest/v1/farmabot_pacientes?cpf=eq.${cpfLimpo}&limit=1`,
+      { headers:{"apikey":SUPA_KEY,"Authorization":`Bearer ${SUPA_KEY}`} }
+    );
+    const data = await res.json();
+    return data?.[0] || null;
+  } catch(e) {
+    console.error('Erro buscarPacientePorCpf:', e.message);
     return null;
   }
 }
@@ -134,61 +155,87 @@ async function enviar(jid, texto) {
 // ── Processar mensagem ────────────────────────────────────────────────────────
 async function processar(jid, texto, numeroReal) {
   const t = texto.toLowerCase().trim();
-  // Usa numeroReal se fornecido, senão extrai do JID normalmente
   const numero = numeroReal || jid.replace('@s.whatsapp.net','').replace('@lid','').replace(/^55/,'');
+  const isLid = jid.includes('@lid');
 
-  // 1. Emergência — sempre responde, independente de qualquer estado
+  // 1. Emergência — sempre responde
   if(GATILHOS_EMERGENCIA.some(g=>t.includes(g))) {
     await enviar(jid,'🚨 *ATENÇÃO!* Pelos sintomas que descreveu, ligue *AGORA* para o SAMU: *192*\n\nNão espere — sua saúde é prioridade!');
     return;
   }
 
-  // 2. Reset explícito — paciente quer recomeçar
+  // 2. Reset explícito
   if(GATILHOS_RESET.some(g=>t.includes(g))) {
     delete historicos[jid];
+    delete aguardandoCpf[jid];
+    delete pacientesIdentificados[jid];
     await enviar(jid,'👋 Olá! Bem-vindo(a) à FarmaBot da UBS de Trindade-GO.\n\nEstou aqui para ajudar com dúvidas sobre seus medicamentos. Como posso te ajudar hoje?');
     return;
   }
 
-  // 3. Verifica se há pendência aberta para esse número
-  //    Se sim, adiciona a nova mensagem à conversa existente em vez de responder automaticamente
+  // 3. Se estava aguardando CPF, tenta identificar
+  if(aguardandoCpf[jid]) {
+    const cpfDigitado = texto.replace(/\D/g,'');
+    if(cpfDigitado.length === 11) {
+      const pacienteCpf = await buscarPacientePorCpf(cpfDigitado);
+      if(pacienteCpf) {
+        pacientesIdentificados[jid] = pacienteCpf;
+        delete aguardandoCpf[jid];
+        console.log(`✅ Identificado por CPF: ${pacienteCpf.nome}`);
+        await enviar(jid, `✅ Olá, *${pacienteCpf.nome.split(' ')[0]}*! Identifiquei seu cadastro.\n\nComo posso te ajudar com seus medicamentos hoje?`);
+        return;
+      } else {
+        delete aguardandoCpf[jid];
+        await enviar(jid, '⚠️ CPF não encontrado no nosso sistema. Continuarei sem identificação.\n\nComo posso ajudar?');
+        return;
+      }
+    } else {
+      delete aguardandoCpf[jid];
+      await enviar(jid, 'CPF inválido. Continuarei sem identificação. Como posso ajudar?');
+      return;
+    }
+  }
+
+  // 4. Tenta identificar paciente (cache → telefone)
+  let paciente = pacientesIdentificados[jid] || null;
+  if(!paciente) {
+    paciente = await buscarPaciente(numero);
+    if(paciente && isLid) pacientesIdentificados[jid] = paciente;
+  }
+  console.log(`📋 Paciente: ${paciente?.nome || 'não identificado'} | LID: ${isLid}`);
+
+  // 5. Pendência aberta
   const pendenciaAberta = await buscarPendenciaAberta(numero);
   if(pendenciaAberta) {
-    // Adiciona a mensagem à conversa existente no Supabase
     try {
       const hora = new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
       const msgsAtualizadas = [...(pendenciaAberta.msgs||[]), {tipo:'paciente',texto,hora}];
       await fetch(`${SUPA_URL}/rest/v1/farmabot_conversas?id=eq.${pendenciaAberta.id}`,{
         method:'PATCH',
-        headers:{
-          "apikey":SUPA_KEY,
-          "Authorization":`Bearer ${SUPA_KEY}`,
-          "Content-Type":"application/json"
-        },
+        headers:{"apikey":SUPA_KEY,"Authorization":`Bearer ${SUPA_KEY}`,"Content-Type":"application/json"},
         body:JSON.stringify({msgs:msgsAtualizadas})
       });
     } catch(e){console.error('Erro atualizar pendência:',e.message);}
-
-    // Só responde automaticamente se for uma saudação (nova tentativa de iniciar)
     const ehSaudacao = ['oi','olá','ola','bom dia','boa tarde','boa noite'].some(g=>t.includes(g));
     if(ehSaudacao) {
       await enviar(jid,'⏳ Sua mensagem anterior já está com o farmacêutico da sua UBS.\n\nAssim que ele responder, você receberá uma mensagem aqui. Para urgências: SAMU 192.');
     }
-    // Outras mensagens adicionais são silenciosamente adicionadas à conversa no painel
     return;
   }
 
-  // 4. FAQ automático (do Supabase ou padrão)
-  //    IMPORTANTE: verificar estoque ANTES do FAQ para que "tem dipirona" não vire saudação
+  // 6. Estoque → farmacêutico (pede CPF se for @lid e não identificado)
   if(GATILHOS_ESTOQUE.some(g=>t.includes(g))) {
-    const paciente = await buscarPaciente(numero);
-    console.log(`📋 Paciente encontrado: ${paciente?.nome || 'não cadastrado'} para número ${numero}`);
+    if(isLid && !paciente) {
+      aguardandoCpf[jid] = true;
+      await enviar(jid, '💊 Para verificar o medicamento, preciso identificar seu cadastro.\n\nPor favor, digite seu *CPF* (apenas números):');
+      return;
+    }
     await salvarPendencia(paciente?.nome, jid, texto);
     await enviar(jid,'Sua dúvida sobre disponibilidade de medicamento foi encaminhada para o farmacêutico da sua UBS. ⏳\n\nEm breve você receberá uma resposta. Para emergências: SAMU 192.');
     return;
   }
 
-  // 5. FAQ
+  // 7. FAQ
   const faqs = await buscarFaqs();
   const faqMatch = faqs.find(f => (f.gatilhos||[]).some(g=>t.includes(g)));
   if(faqMatch) {
@@ -196,13 +243,12 @@ async function processar(jid, texto, numeroReal) {
     return;
   }
 
-  // 6. IA (Claude via Supabase Edge Function)
+  // 8. IA (Claude via Supabase Edge Function)
   if(!historicos[jid]) historicos[jid]=[];
   historicos[jid].push({role:'user',content:texto});
   if(historicos[jid].length>10) historicos[jid]=historicos[jid].slice(-10);
 
   try {
-    const paciente = await buscarPaciente(numero);
     console.log(`🤖 IA acionada — paciente: ${paciente?.nome || 'não cadastrado'}`);
     const ctx = paciente
       ? `\nPACIENTE: ${paciente.nome}, ${paciente.idade} anos. Condições: ${(paciente.condicoes||[]).join(', ')}. Medicamentos: ${(paciente.medicamentos||[]).map(m=>`${m.nome} (${m.dose})`).join('; ')}.`
@@ -300,7 +346,7 @@ app.get('/qr',async(req,res)=>{
   res.send(`<html><body style="background:#054d38;display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;font-family:sans-serif"><div style="font-size:48px;margin-bottom:16px">⏳</div><h2 style="color:#fff">Aguardando QR Code...</h2><p style="color:rgba(255,255,255,0.7)">Status: ${statusConexao}</p><script>setTimeout(()=>location.reload(),5000)</script></body></html>`);
 });
 
-app.get('/',(req,res)=>res.json({status:statusConexao==='conectado'?'✅ FarmaBot WhatsApp Online!':`⏳ ${statusConexao}`,municipio:'Trindade-GO — DAF',versao:'2.3.0',qr:statusConexao!=='conectado'?'/qr':null}));
+app.get('/',(req,res)=>res.json({status:statusConexao==='conectado'?'✅ FarmaBot WhatsApp Online!':`⏳ ${statusConexao}`,municipio:'Trindade-GO — DAF',versao:'2.4.0',qr:statusConexao!=='conectado'?'/qr':null}));
 
 app.post('/enviar',async(req,res)=>{
   const{numero,mensagem}=req.body;
