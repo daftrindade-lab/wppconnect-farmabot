@@ -1,18 +1,18 @@
 {
-  "name": "wppconnect-farmabot",
+  "name": "farmabot-whatsapp",
   "version": "1.0.0",
-  "description": "WPPConnect Server para FarmaBot SUS - DAF Trindade-GO",
+  "description": "FarmaBot SUS WhatsApp - DAF Trindade-GO",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "postinstall": "npx puppeteer browsers install chrome"
+    "start": "node server.js"
   },
   "dependencies": {
-    "@wppconnect-team/wppconnect": "^1.30.0",
+    "@whiskeysockets/baileys": "^6.7.0",
     "express": "^4.18.2",
     "cors": "^2.8.5",
     "node-fetch": "^2.7.0",
-    "puppeteer": "^21.0.0"
+    "qrcode": "^1.5.3",
+    "pino": "^8.0.0"
   },
   "engines": {
     "node": ">=18.0.0"
