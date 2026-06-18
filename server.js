@@ -85,12 +85,23 @@ async function buscarPacientePorCpf(cpf) {
   try {
     const cpfLimpo = cpf.replace(/\D/g,'');
     if(cpfLimpo.length < 11) return null;
-    const res = await fetch(
-      `${SUPA_URL}/rest/v1/farmabot_pacientes?cpf=eq.${cpfLimpo}&limit=1`,
-      { headers:{"apikey":SUPA_KEY,"Authorization":`Bearer ${SUPA_KEY}`} }
-    );
-    const data = await res.json();
-    return data?.[0] || null;
+    // Tenta até 3 vezes (problema de "Premature close" no Render free tier)
+    for(let i=0; i<3; i++) {
+      try {
+        const res = await fetch(
+          `${SUPA_URL}/rest/v1/farmabot_pacientes?cpf=eq.${cpfLimpo}&limit=1`,
+          { headers:{"apikey":SUPA_KEY,"Authorization":`Bearer ${SUPA_KEY}`} }
+        );
+        if(!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        console.log(`🔍 buscarPacientePorCpf tentativa ${i+1}: ${data?.[0]?.nome || 'não encontrado'}`);
+        return data?.[0] || null;
+      } catch(e) {
+        console.error(`buscarPacientePorCpf tentativa ${i+1} falhou: ${e.message}`);
+        if(i<2) await new Promise(r=>setTimeout(r,1000)); // espera 1s antes de retry
+      }
+    }
+    return null;
   } catch(e) {
     console.error('Erro buscarPacientePorCpf:', e.message);
     return null;
@@ -346,7 +357,7 @@ app.get('/qr',async(req,res)=>{
   res.send(`<html><body style="background:#054d38;display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;font-family:sans-serif"><div style="font-size:48px;margin-bottom:16px">⏳</div><h2 style="color:#fff">Aguardando QR Code...</h2><p style="color:rgba(255,255,255,0.7)">Status: ${statusConexao}</p><script>setTimeout(()=>location.reload(),5000)</script></body></html>`);
 });
 
-app.get('/',(req,res)=>res.json({status:statusConexao==='conectado'?'✅ FarmaBot WhatsApp Online!':`⏳ ${statusConexao}`,municipio:'Trindade-GO — DAF',versao:'2.4.0',qr:statusConexao!=='conectado'?'/qr':null}));
+app.get('/',(req,res)=>res.json({status:statusConexao==='conectado'?'✅ FarmaBot WhatsApp Online!':`⏳ ${statusConexao}`,municipio:'Trindade-GO — DAF',versao:'2.4.1',qr:statusConexao!=='conectado'?'/qr':null}));
 
 app.post('/enviar',async(req,res)=>{
   const{numero,mensagem}=req.body;
