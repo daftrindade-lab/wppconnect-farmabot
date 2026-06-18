@@ -44,9 +44,15 @@ REGRAS: Linguagem simples. Máx 3 parágrafos. Nunca altere doses. Não confirme
 // ── Supabase helpers ──────────────────────────────────────────────────────────
 async function buscarPaciente(telefone) {
   try {
-    const num = telefone.replace(/\D/g,'').slice(-11);
-    const res = await fetch(`${SUPA_URL}/rest/v1/farmabot_pacientes?telefone=eq.${num}&limit=1`,
-      { headers:{"apikey":SUPA_KEY,"Authorization":`Bearer ${SUPA_KEY}`} });
+    // Tenta com os últimos 11 dígitos (sem código do país)
+    const num11 = telefone.replace(/\D/g,'').slice(-11);
+    // Tenta com os últimos 10 dígitos (sem DDD 0)
+    const num10 = telefone.replace(/\D/g,'').slice(-10);
+    // Busca pelos dois formatos
+    const res = await fetch(
+      `${SUPA_URL}/rest/v1/farmabot_pacientes?or=(telefone.eq.${num11},telefone.eq.${num10})&limit=1`,
+      { headers:{"apikey":SUPA_KEY,"Authorization":`Bearer ${SUPA_KEY}`} }
+    );
     const data = await res.json();
     return data?.[0]||null;
   } catch { return null; }
