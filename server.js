@@ -20,6 +20,9 @@ let qrAtual = null;
 let statusConexao = 'desconectado';
 const historicos = {};
 
+// Mapa LID → número real (preenchido quando recebemos mensagens com @lid)
+const lidParaNumero = {};
+
 // ── FAQ Automático ────────────────────────────────────────────────────────────
 const FAQ = [
   { gatilhos:["horário","horario","que horas","quando abr","funciona","abre"], resposta:"🕐 Nossa UBS funciona de segunda a sexta, das 7h às 17h. Para emergências, ligue para o SAMU: 192." },
@@ -129,9 +132,10 @@ async function enviar(jid, texto) {
 }
 
 // ── Processar mensagem ────────────────────────────────────────────────────────
-async function processar(jid, texto) {
+async function processar(jid, texto, numeroReal) {
   const t = texto.toLowerCase().trim();
-  const numero = jid.replace('@s.whatsapp.net','');
+  // Usa numeroReal se fornecido, senão extrai do JID normalmente
+  const numero = numeroReal || jid.replace('@s.whatsapp.net','').replace('@lid','').replace(/^55/,'');
 
   // 1. Emergência — sempre responde, independente de qualquer estado
   if(GATILHOS_EMERGENCIA.some(g=>t.includes(g))) {
@@ -245,11 +249,41 @@ async function iniciar() {
     for(const msg of messages){
       if(msg.key.fromMe) continue;
       if(msg.key.remoteJid?.includes('@g.us')) continue;
+
       const jid = msg.key.remoteJid;
       const texto = msg.message?.conversation||msg.message?.extendedTextMessage?.text||'';
       if(!texto.trim()) continue;
-      console.log(`📩 ${jid.split('@')[0]}: ${texto}`);
-      await processar(jid,texto);
+
+      // Resolve número real quando JID é @lid
+      let numeroReal = jid.replace('@s.whatsapp.net','').replace('@lid','');
+
+      // Se for @lid, tenta recuperar número real via verifyJidExists ou cache
+      if(jid.includes('@lid')) {
+        // Tenta buscar do cache primeiro
+        if(lidParaNumero[jid]) {
+          numeroReal = lidParaNumero[jid];
+        } else {
+          // Tenta resolver via sock.onWhatsApp (busca o número real)
+          try {
+            const lid = jid.replace('@lid','');
+            // Algumas versões do Baileys expõem o número via store ou msg.key
+            // Tenta via participant se disponível
+            const participant = msg.participant || msg.key?.participant;
+            if(participant) {
+              numeroReal = participant.replace('@s.whatsapp.net','').replace(/^55/,'');
+              lidParaNumero[jid] = numeroReal;
+            }
+          } catch(e) { console.error('Erro resolver LID:', e.message); }
+        }
+      } else {
+        // JID normal — remove código do país 55 se presente
+        numeroReal = jid.replace('@s.whatsapp.net','').replace(/^55/,'');
+        // Salva no cache caso o mesmo usuário envie @lid depois
+        lidParaNumero[`${numeroReal}@lid`] = numeroReal;
+      }
+
+      console.log(`📩 JID: ${jid} | Número: ${numeroReal} | Msg: ${texto}`);
+      await processar(jid, texto, numeroReal);
     }
   });
 }
@@ -266,7 +300,7 @@ app.get('/qr',async(req,res)=>{
   res.send(`<html><body style="background:#054d38;display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;font-family:sans-serif"><div style="font-size:48px;margin-bottom:16px">⏳</div><h2 style="color:#fff">Aguardando QR Code...</h2><p style="color:rgba(255,255,255,0.7)">Status: ${statusConexao}</p><script>setTimeout(()=>location.reload(),5000)</script></body></html>`);
 });
 
-app.get('/',(req,res)=>res.json({status:statusConexao==='conectado'?'✅ FarmaBot WhatsApp Online!':`⏳ ${statusConexao}`,municipio:'Trindade-GO — DAF',versao:'2.2.0',qr:statusConexao!=='conectado'?'/qr':null}));
+app.get('/',(req,res)=>res.json({status:statusConexao==='conectado'?'✅ FarmaBot WhatsApp Online!':`⏳ ${statusConexao}`,municipio:'Trindade-GO — DAF',versao:'2.3.0',qr:statusConexao!=='conectado'?'/qr':null}));
 
 app.post('/enviar',async(req,res)=>{
   const{numero,mensagem}=req.body;
