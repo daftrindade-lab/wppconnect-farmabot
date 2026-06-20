@@ -55,13 +55,32 @@ REGRAS: Linguagem simples. Máx 3 parágrafos. Nunca altere doses. Não confirme
 async function buscarPaciente(telefone) {
   try {
     const digits = telefone.replace(/\D/g,'');
-    const num11 = digits.slice(-11);
-    const num10 = digits.slice(-10);
-    const num13 = '55' + num11;
-    const num12 = '55' + num10;
+    // Várias variações possíveis vindas da Meta API:
+    // 556285816375 (sem o 9) | 5562985816375 (com o 9) | 62985816375 | 6285816375
+    const semPais = digits.replace(/^55/,''); // remove código do país se tiver
+    const variacoes = new Set();
 
+    variacoes.add(digits);
+    variacoes.add(semPais);
+
+    // Se tem 10 dígitos (DDD + 8 dígitos, sem o 9), adiciona versão com 9
+    if(semPais.length === 10) {
+      const ddd = semPais.slice(0,2);
+      const resto = semPais.slice(2);
+      variacoes.add(`${ddd}9${resto}`);
+      variacoes.add(`55${ddd}9${resto}`);
+    }
+    // Se tem 11 dígitos (DDD + 9 + 8 dígitos), adiciona versão sem o 9
+    if(semPais.length === 11) {
+      const ddd = semPais.slice(0,2);
+      const resto = semPais.slice(3); // remove o 9
+      variacoes.add(`${ddd}${resto}`);
+      variacoes.add(`55${ddd}${resto}`);
+    }
+
+    const orFilter = Array.from(variacoes).map(v => `telefone.eq.${v}`).join(',');
     const res = await fetch(
-      `${SUPA_URL}/rest/v1/farmabot_pacientes?or=(telefone.eq.${num11},telefone.eq.${num10},telefone.eq.${num13},telefone.eq.${num12})&limit=1`,
+      `${SUPA_URL}/rest/v1/farmabot_pacientes?or=(${orFilter})&limit=1`,
       { headers:{"apikey":SUPA_KEY,"Authorization":`Bearer ${SUPA_KEY}`} }
     );
     const data = await res.json();
@@ -166,6 +185,7 @@ async function enviar(numero, texto) {
       }
     );
     const data = await res.json();
+    console.log(`📤 Resposta completa Meta: ${JSON.stringify(data)}`);
     if(data.error) {
       console.error('Erro ao enviar mensagem Meta:', JSON.stringify(data.error));
     } else {
@@ -337,7 +357,7 @@ app.post('/webhook', async (req, res) => {
 app.get('/', (req,res) => res.json({
   status: '✅ FarmaBot SUS Online! (Meta Cloud API)',
   municipio: 'Trindade-GO — DAF',
-  versao: '3.0.0-meta',
+  versao: '3.1.1-meta',
   webhook: '/webhook'
 }));
 
