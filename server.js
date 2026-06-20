@@ -55,6 +55,127 @@ function getUbsPorPhoneNumberId(phoneNumberId) {
 carregarUbsCache();
 setInterval(carregarUbsCache, 5 * 60 * 1000); // recarrega a cada 5 min (pega novas UBS cadastradas)
 
+// ── Motor de lembretes de horário de medicação ────────────────────────────────
+let pacientesCache = [];
+let horariosPadraoCache = new Map(); // rotulo -> [HH:MM, ...]
+let ubsPorNomeCache = new Map();     // nome_ubs -> phone_number_id
+
+async function carregarPacientesCache() {
+  try {
+    const res = await fetch(`${SUPA_URL}/rest/v1/farmabot_pacientes?select=id,nome,telefone,ubs_nome,medicamentos`, {
+      headers: { "apikey": SUPA_KEY, "Authorization": `Bearer ${SUPA_KEY}` }
+    });
+    const data = await res.json();
+    if (Array.isArray(data)) {
+      pacientesCache = data;
+      console.log(`✅ Cache de pacientes carregado: ${pacientesCache.length} paciente(s)`);
+    }
+  } catch (e) {
+    console.error('Erro ao carregar cache de pacientes:', e.message);
+  }
+}
+
+async function carregarHorariosPadraoCache() {
+  try {
+    const res = await fetch(`${SUPA_URL}/rest/v1/farmabot_horarios_padrao?select=*`, {
+      headers: { "apikey": SUPA_KEY, "Authorization": `Bearer ${SUPA_KEY}` }
+    });
+    const data = await res.json();
+    if (Array.isArray(data)) {
+      const novo = new Map();
+      data.forEach(r => novo.set(r.rotulo, r.horarios || []));
+      horariosPadraoCache = novo;
+      console.log(`✅ Tabela de horários-padrão carregada: ${horariosPadraoCache.size} rótulo(s)`);
+    }
+  } catch (e) {
+    console.error('Erro ao carregar horários-padrão:', e.message);
+  }
+}
+
+function atualizarUbsPorNome() {
+  const novo = new Map();
+  ubsCache.forEach(u => novo.set(u.nome_ubs, u.phone_number_id));
+  ubsPorNomeCache = novo;
+}
+
+carregarPacientesCache();
+carregarHorariosPadraoCache();
+setInterval(carregarPacientesCache, 5 * 60 * 1000);
+setInterval(carregarHorariosPadraoCache, 5 * 60 * 1000);
+
+// Converte um rótulo (ex: "Antes do almoço") em lista de horários HH:MM.
+// Se já for hora exata (ex: "08:00"), usa ela mesma.
+function resolverHorarios(rotulo) {
+  if (/^\d{2}:\d{2}$/.test(rotulo)) return [rotulo];
+  return horariosPadraoCache.get(rotulo) || [];
+}
+
+function horaAtualSP() {
+  return new Date().toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
+}
+
+function dataAtualSP() {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' }); // formato YYYY-MM-DD
+}
+
+async function jaFoiEnviado(pacienteId, medicamento, horario, data) {
+  try {
+    const res = await fetch(
+      `${SUPA_URL}/rest/v1/farmabot_lembretes_enviados?paciente_id=eq.${pacienteId}&medicamento=eq.${encodeURIComponent(medicamento)}&horario=eq.${encodeURIComponent(horario)}&data=eq.${data}&select=id&limit=1`,
+      { headers: { "apikey": SUPA_KEY, "Authorization": `Bearer ${SUPA_KEY}` } }
+    );
+    const d = await res.json();
+    return Array.isArray(d) && d.length > 0;
+  } catch { return false; }
+}
+
+async function marcarEnviado(pacienteId, medicamento, horario, data) {
+  try {
+    await fetch(`${SUPA_URL}/rest/v1/farmabot_lembretes_enviados`, {
+      method: 'POST',
+      headers: {
+        "apikey": SUPA_KEY,
+        "Authorization": `Bearer ${SUPA_KEY}`,
+        "Content-Type": "application/json",
+        "Prefer": "resolution=ignore-duplicates"
+      },
+      body: JSON.stringify({ paciente_id: pacienteId, medicamento, horario, data })
+    });
+  } catch (e) { console.error('Erro ao marcar lembrete enviado:', e.message); }
+}
+
+async function checarLembretes() {
+  const agora = horaAtualSP();
+  const hoje = dataAtualSP();
+  atualizarUbsPorNome();
+
+  for (const paciente of pacientesCache) {
+    const medicamentos = paciente.medicamentos || [];
+    const phoneNumberId = ubsPorNomeCache.get(paciente.ubs_nome);
+    if (!phoneNumberId) continue; // UBS desse paciente ainda não tem número cadastrado no farmabot_ubs
+
+    for (const med of medicamentos) {
+      const rotulos = med.horarios || [];
+      for (const rotulo of rotulos) {
+        const horariosResolvidos = resolverHorarios(rotulo);
+        if (!horariosResolvidos.includes(agora)) continue;
+
+        const jaEnviado = await jaFoiEnviado(paciente.id, med.nome, rotulo, hoje);
+        if (jaEnviado) continue;
+
+        const primeiroNome = (paciente.nome || '').split(' ')[0];
+        const msg = `💊 Olá, *${primeiroNome}*! Está na hora de tomar:\n\n*${med.nome}* — ${med.dose}\n\nApós tomar, não precisa responder nada. Qualquer dúvida, é só chamar aqui! 😊`;
+
+        await enviar(paciente.telefone, msg, phoneNumberId);
+        await marcarEnviado(paciente.id, med.nome, rotulo, hoje);
+        console.log(`💊 Lembrete enviado: ${paciente.nome} | ${med.nome} | ${rotulo} (${agora})`);
+      }
+    }
+  }
+}
+
+setInterval(checarLembretes, 60 * 1000); // checa a cada minuto
+
 // ── FAQ Automático ────────────────────────────────────────────────────────────
 const FAQ = [
   { gatilhos:["horário","horario","que horas","quando abr","funciona","abre"], resposta:"🕐 Nossa UBS funciona de segunda a sexta, das 7h às 17h. Para emergências, ligue para o SAMU: 192." },
@@ -370,19 +491,8 @@ app.post('/webhook', async (req, res) => {
     const changes = entry?.changes?.[0];
     const value = changes?.value;
     const messages = value?.messages;
-    const statuses = value?.statuses;
     const phoneNumberId = value?.metadata?.phone_number_id;
     const ubs = getUbsPorPhoneNumberId(phoneNumberId);
-
-    // NOVO: mostra o status real de entrega de cada mensagem enviada
-    if (statuses && statuses.length > 0) {
-      for (const st of statuses) {
-        console.log(`📊 Status: ${st.status} | Destinatário: ${st.recipient_id} | wamid: ${st.id}`);
-        if (st.errors) {
-          console.error(`❌ Motivo da falha:`, JSON.stringify(st.errors));
-        }
-      }
-    }
 
     if(!messages || messages.length === 0) return;
 
@@ -404,8 +514,9 @@ app.post('/webhook', async (req, res) => {
 app.get('/', (req,res) => res.json({
   status: '✅ FarmaBot SUS Online! (Meta Cloud API multi-UBS)',
   municipio: 'Trindade-GO — DAF',
-  versao: '3.2.0-meta-multiubs',
+  versao: '3.3.0-meta-multiubs-lembretes',
   ubsAtivas: ubsCache.size,
+  pacientesMonitorados: pacientesCache.length,
   webhook: '/webhook'
 }));
 
