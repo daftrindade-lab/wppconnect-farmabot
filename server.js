@@ -573,7 +573,9 @@ app.post('/admin/ubs', async (req, res) => {
 app.post('/admin/recarregar-ubs', async (req, res) => {
   if (!checkAdmin(req, res)) return;
   await carregarUbsCache();
-  res.json({ ok: true, total: ubsCache.size });
+  await carregarPacientesCache();
+  await carregarHorariosPadraoCache();
+  res.json({ ok: true, ubs: ubsCache.size, pacientes: pacientesCache.length, horarios: horariosPadraoCache.size });
 });
 
 app.listen(PORT, () => {
