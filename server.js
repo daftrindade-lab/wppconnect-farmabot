@@ -370,8 +370,19 @@ app.post('/webhook', async (req, res) => {
     const changes = entry?.changes?.[0];
     const value = changes?.value;
     const messages = value?.messages;
+    const statuses = value?.statuses;
     const phoneNumberId = value?.metadata?.phone_number_id;
     const ubs = getUbsPorPhoneNumberId(phoneNumberId);
+
+    // NOVO: mostra o status real de entrega de cada mensagem enviada
+    if (statuses && statuses.length > 0) {
+      for (const st of statuses) {
+        console.log(`📊 Status: ${st.status} | Destinatário: ${st.recipient_id} | wamid: ${st.id}`);
+        if (st.errors) {
+          console.error(`❌ Motivo da falha:`, JSON.stringify(st.errors));
+        }
+      }
+    }
 
     if(!messages || messages.length === 0) return;
 
