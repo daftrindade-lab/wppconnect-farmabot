@@ -148,6 +148,7 @@ async function checarLembretes() {
   const agora = horaAtualSP();
   const hoje = dataAtualSP();
   atualizarUbsPorNome();
+  console.log(`🕐 Checando lembretes às ${agora} (${hoje}) | ${pacientesCache.length} paciente(s) em cache`);
 
   for (const paciente of pacientesCache) {
     const medicamentos = paciente.medicamentos || [];
