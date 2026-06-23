@@ -12,67 +12,31 @@ const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsI
 
 // ── Configuração Meta WhatsApp Cloud API ──────────────────────────────────────
 const META_TOKEN = process.env.META_TOKEN || "COLE_AQUI_O_TOKEN_PERMANENTE";
-const META_PHONE_NUMBER_ID_PADRAO = process.env.META_PHONE_NUMBER_ID || "1178353528691016"; // fallback/legado (número de teste)
+const META_PHONE_NUMBER_ID = process.env.META_PHONE_NUMBER_ID || "1250492738136626"; // número central DAF
 const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || "Farmaciaesp2026";
 const META_API_VERSION = "v23.0";
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "DAF1401";
 
-const historicos = {};
-const pacientesIdentificados = {};
-const aguardandoCpf = {};
+// ── Estado em memória ─────────────────────────────────────────────────────────
+const historicos = {};           // numero -> [{role, content}]
+const pacientesIdentificados = {}; // numero -> paciente
+const fluxoIdentificacao = {};   // numero -> { etapa, dadosParciais }
 
-// ── Cache de UBS (multi-número) ───────────────────────────────────────────────
-// Mapeia phone_number_id (da Meta) -> { nome_ubs, phone_number_id, numero_whatsapp, display_name }
-let ubsCache = new Map();
-
-async function carregarUbsCache() {
-  try {
-    const res = await fetch(`${SUPA_URL}/rest/v1/farmabot_ubs?select=*&status=eq.ativo`, {
-      headers: { "apikey": SUPA_KEY, "Authorization": `Bearer ${SUPA_KEY}` }
-    });
-    const data = await res.json();
-    if (Array.isArray(data)) {
-      const novoCache = new Map();
-      data.forEach(u => novoCache.set(u.phone_number_id, u));
-      ubsCache = novoCache;
-      console.log(`✅ Cache de UBS carregado: ${ubsCache.size} unidade(s) ativa(s)`);
-    }
-  } catch (e) {
-    console.error('Erro ao carregar cache de UBS:', e.message);
-  }
-}
-
-function getUbsPorPhoneNumberId(phoneNumberId) {
-  const ubs = ubsCache.get(phoneNumberId);
-  if (ubs) return ubs;
-  // Número ainda não cadastrado na tabela farmabot_ubs (ex: número de teste durante transição)
-  return {
-    nome_ubs: 'UBS não identificada',
-    phone_number_id: phoneNumberId || META_PHONE_NUMBER_ID_PADRAO
-  };
-}
-
-carregarUbsCache();
-setInterval(carregarUbsCache, 5 * 60 * 1000); // recarrega a cada 5 min (pega novas UBS cadastradas)
-
-// ── Motor de lembretes de horário de medicação ────────────────────────────────
+// ── Cache ─────────────────────────────────────────────────────────────────────
 let pacientesCache = [];
-let horariosPadraoCache = new Map(); // rotulo -> [HH:MM, ...]
-let ubsPorNomeCache = new Map();     // nome_ubs -> phone_number_id
+let horariosPadraoCache = new Map();
 
 async function carregarPacientesCache() {
   try {
-    const res = await fetch(`${SUPA_URL}/rest/v1/farmabot_pacientes?select=id,nome,telefone,ubs_nome,medicamentos`, {
+    const res = await fetch(`${SUPA_URL}/rest/v1/farmabot_pacientes?select=id,nome,telefone,cpf,ubs_nome,medicamentos,ubs_id`, {
       headers: { "apikey": SUPA_KEY, "Authorization": `Bearer ${SUPA_KEY}` }
     });
     const data = await res.json();
     if (Array.isArray(data)) {
       pacientesCache = data;
-      console.log(`✅ Cache de pacientes carregado: ${pacientesCache.length} paciente(s)`);
+      console.log(`✅ Cache de pacientes: ${pacientesCache.length} paciente(s)`);
     }
-  } catch (e) {
-    console.error('Erro ao carregar cache de pacientes:', e.message);
-  }
+  } catch (e) { console.error('Erro cache pacientes:', e.message); }
 }
 
 async function carregarHorariosPadraoCache() {
@@ -85,17 +49,9 @@ async function carregarHorariosPadraoCache() {
       const novo = new Map();
       data.forEach(r => novo.set(r.rotulo, r.horarios || []));
       horariosPadraoCache = novo;
-      console.log(`✅ Tabela de horários-padrão carregada: ${horariosPadraoCache.size} rótulo(s)`);
+      console.log(`✅ Horários-padrão: ${horariosPadraoCache.size} rótulo(s)`);
     }
-  } catch (e) {
-    console.error('Erro ao carregar horários-padrão:', e.message);
-  }
-}
-
-function atualizarUbsPorNome() {
-  const novo = new Map();
-  ubsCache.forEach(u => novo.set(u.nome_ubs, u.phone_number_id));
-  ubsPorNomeCache = novo;
+  } catch (e) { console.error('Erro cache horários:', e.message); }
 }
 
 carregarPacientesCache();
@@ -103,228 +59,139 @@ carregarHorariosPadraoCache();
 setInterval(carregarPacientesCache, 5 * 60 * 1000);
 setInterval(carregarHorariosPadraoCache, 5 * 60 * 1000);
 
-// Converte um rótulo (ex: "Antes do almoço") em lista de horários HH:MM.
-// Se já for hora exata (ex: "08:00"), usa ela mesma.
-function resolverHorarios(rotulo) {
-  if (/^\d{2}:\d{2}$/.test(rotulo)) return [rotulo];
-  return horariosPadraoCache.get(rotulo) || [];
-}
-
-function horaAtualSP() {
-  return new Date().toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
-}
-
-function dataAtualSP() {
-  return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' }); // formato YYYY-MM-DD
-}
-
-async function jaFoiEnviado(pacienteId, medicamento, horario, data) {
-  try {
-    const res = await fetch(
-      `${SUPA_URL}/rest/v1/farmabot_lembretes_enviados?paciente_id=eq.${pacienteId}&medicamento=eq.${encodeURIComponent(medicamento)}&horario=eq.${encodeURIComponent(horario)}&data=eq.${data}&select=id&limit=1`,
-      { headers: { "apikey": SUPA_KEY, "Authorization": `Bearer ${SUPA_KEY}` } }
-    );
-    const d = await res.json();
-    return Array.isArray(d) && d.length > 0;
-  } catch { return false; }
-}
-
-async function marcarEnviado(pacienteId, medicamento, horario, data) {
-  try {
-    await fetch(`${SUPA_URL}/rest/v1/farmabot_lembretes_enviados`, {
-      method: 'POST',
-      headers: {
-        "apikey": SUPA_KEY,
-        "Authorization": `Bearer ${SUPA_KEY}`,
-        "Content-Type": "application/json",
-        "Prefer": "resolution=ignore-duplicates"
-      },
-      body: JSON.stringify({ paciente_id: pacienteId, medicamento, horario, data })
-    });
-  } catch (e) { console.error('Erro ao marcar lembrete enviado:', e.message); }
-}
-
-async function checarLembretes() {
-  const agora = horaAtualSP();
-  const hoje = dataAtualSP();
-  atualizarUbsPorNome();
-  console.log(`🕐 Checando lembretes às ${agora} (${hoje}) | ${pacientesCache.length} paciente(s) em cache`);
-
-  for (const paciente of pacientesCache) {
-    const medicamentos = paciente.medicamentos || [];
-    const phoneNumberId = ubsPorNomeCache.get(paciente.ubs_nome);
-    if (!phoneNumberId) continue; // UBS desse paciente ainda não tem número cadastrado no farmabot_ubs
-
-    for (const med of medicamentos) {
-      const rotulos = med.horarios || [];
-      for (const rotulo of rotulos) {
-        const horariosResolvidos = resolverHorarios(rotulo);
-        if (!horariosResolvidos.includes(agora)) continue;
-
-        const jaEnviado = await jaFoiEnviado(paciente.id, med.nome, rotulo, hoje);
-        if (jaEnviado) continue;
-
-        const primeiroNome = (paciente.nome || '').split(' ')[0];
-        const msg = `💊 Olá, *${primeiroNome}*! Está na hora de tomar:\n\n*${med.nome}* — ${med.dose}\n\nApós tomar, não precisa responder nada. Qualquer dúvida, é só chamar aqui! 😊`;
-
-        await enviar(paciente.telefone, msg, phoneNumberId);
-        await marcarEnviado(paciente.id, med.nome, rotulo, hoje);
-        console.log(`💊 Lembrete enviado: ${paciente.nome} | ${med.nome} | ${rotulo} (${agora})`);
-      }
-    }
-  }
-}
-
-setInterval(checarLembretes, 60 * 1000); // checa a cada minuto
-
-// ── FAQ Automático ────────────────────────────────────────────────────────────
+// ── FAQ ───────────────────────────────────────────────────────────────────────
 const FAQ = [
   { gatilhos:["horário","horario","que horas","quando abr","funciona","abre"], resposta:"🕐 Nossa UBS funciona de segunda a sexta, das 7h às 17h. Para emergências, ligue para o SAMU: 192." },
-  { gatilhos:["telefone","fone","contato","ligar"], resposta:"📞 Para falar com nossa UBS, envie mensagem aqui mesmo ou compareça pessoalmente durante o horário de funcionamento (7h-17h, seg-sex)." },
+  { gatilhos:["telefone","fone","contato","ligar"], resposta:"📞 Para falar com sua UBS, envie mensagem aqui mesmo ou compareça pessoalmente durante o horário de funcionamento (7h-17h, seg-sex)." },
   { gatilhos:["consulta","médico","medico","agendamento","agendar","marcar"], resposta:"📅 Para agendar consulta médica, compareça à recepção da UBS durante o horário de funcionamento (7h às 17h, seg a sex)." },
   { gatilhos:["endereço","endereco","onde fica","localização","localizacao"], resposta:"📍 Estamos em Trindade-GO. Para o endereço exato da sua UBS, verifique o cartão da unidade ou consulte a Prefeitura de Trindade." },
   { gatilhos:["obrigad","brigad","valeu","muito bem","ótimo","otimo","perfeito"], resposta:"😊 Fico feliz em ajudar! Cuidar da sua saúde é nossa missão. Qualquer dúvida, estou aqui!" },
   { gatilhos:["esqueci","esqueceu","perdi a dose","perdi dose"], resposta:"💊 Se esqueceu uma dose, tome assim que lembrar — *a não ser que esteja próximo do horário da próxima dose*. Nesse caso, pule a dose esquecida e continue normalmente.\n\n⚠️ Nunca tome duas doses de uma vez. Em caso de dúvida, consulte o farmacêutico da sua UBS." },
   { gatilhos:["efeito","colateral","reação","enjoo","tontura","mal estar"], resposta:"Se estiver sentindo mal-estar com algum medicamento, *não pare de tomar por conta própria*. Procure a UBS para orientação. Para sintomas graves, ligue SAMU: 192." },
-  { gatilhos:["pressão","hipertensão","hipertensao"], resposta:"💓 Para controlar a pressão arterial: tome os remédios nos horários certos, reduza o sal, evite estresse, caminhe pelo menos 30 min/dia e meça a pressão regularmente. Dúvidas? Procure nossa UBS!" },
+  { gatilhos:["pressão","hipertensão","hipertensao"], resposta:"💓 Para controlar a pressão arterial: tome os remédios nos horários certos, reduza o sal, evite estresse, caminhe pelo menos 30 min/dia e meça a pressão regularmente." },
   { gatilhos:["diabetes","glicose","açúcar no sangue","acucar"], resposta:"🩺 Para controlar o diabetes: tome os remédios certinho, controle a alimentação, evite açúcar e faça exercícios. Se sentir tontura ou fraqueza, pode ser hipoglicemia — coma algo doce e procure ajuda." },
-  { gatilhos:["oi","olá","ola","bom dia","boa tarde","boa noite","salve","ei ","hello","opa"], resposta:"👋 Olá! Bem-vindo(a) à FarmaBot da UBS de Trindade-GO.\n\nEstou aqui para ajudar com dúvidas sobre seus medicamentos. Como posso te ajudar hoje?" },
+  { gatilhos:["oi","olá","ola","bom dia","boa tarde","boa noite","salve","ei ","hello","opa"], resposta:null }, // resposta dinâmica abaixo
 ];
 
-const GATILHOS_ESTOQUE = [
-  'tem esse','tem o remédio','tem remedio','disponível','disponivel',
-  'acabou','faltou','buscar remédio','retirar','pegar remédio','estoque',
-  'medicamento disponível','tem metformina','tem losartana','tem insulina',
-  'tem dipirona','tem o medicamento','tem esse remédio','tem esse remedio',
-  'tem ','remédio disponível','remedio disponivel','buscar o remédio'
-];
-
+const GATILHOS_ESTOQUE = ['tem esse','tem o remédio','tem remedio','disponível','disponivel','acabou','faltou','buscar remédio','retirar','pegar remédio','estoque','medicamento disponível','tem metformina','tem losartana','tem insulina','tem dipirona','tem o medicamento','tem esse remédio','tem esse remedio','tem ','remédio disponível','remedio disponivel','buscar o remédio'];
 const GATILHOS_RESET = ['reiniciar','recomeçar','comecar de novo','começar de novo','menu','início','inicio','voltar'];
-
 const GATILHOS_EMERGENCIA = ['dor no peito','falta de ar','desmaio','pressão muito alta','convulsão','infarto','avc','sangramento excessivo','inconsciente'];
 
-const SYSTEM = `Você é a FarmaBot, assistente farmacêutica virtual da UBS de Trindade-GO, criada pela farmacêutica Vanessa, Diretora de Assistência Farmacêutica.
+const SYSTEM = `Você é a FarmaBot, assistente farmacêutica virtual da Assistência Farmacêutica de Trindade-GO.
 PERFIL: Idosos com HAS/DM, polimedicados, baixa escolaridade.
-REGRAS: Linguagem simples. Máx 3 parágrafos. Nunca altere doses. Não confirme disponibilidade de medicamentos. Emergências: SAMU 192.`;
+REGRAS: Linguagem simples e acolhedora. Máx 3 parágrafos curtos. Nunca altere doses. Não confirme disponibilidade de medicamentos (isso vai para o farmacêutico). Emergências: SAMU 192.`;
 
-// ── Supabase helpers ──────────────────────────────────────────────────────────
-async function buscarPaciente(telefone) {
+// ── Helpers Supabase ──────────────────────────────────────────────────────────
+async function supaFetch(path, opts = {}) {
+  const res = await fetch(`${SUPA_URL}/rest/v1/${path}`, {
+    headers: {
+      "apikey": SUPA_KEY,
+      "Authorization": `Bearer ${SUPA_KEY}`,
+      "Content-Type": "application/json",
+      ...opts.headers
+    },
+    ...opts
+  });
+  return res.json();
+}
+
+// ── Identificar paciente por telefone ────────────────────────────────────────
+async function buscarPacientePorTelefone(telefone) {
   try {
-    const digits = telefone.replace(/\D/g,'');
-    const semPais = digits.replace(/^55/,'');
-    const variacoes = new Set();
+    const digits = telefone.replace(/\D/g, '');
+    const semPais = digits.replace(/^55/, '');
+    const variacoes = new Set([digits, semPais]);
 
-    variacoes.add(digits);
-    variacoes.add(semPais);
-
-    if(semPais.length === 10) {
-      const ddd = semPais.slice(0,2);
-      const resto = semPais.slice(2);
+    if (semPais.length === 10) {
+      const ddd = semPais.slice(0, 2), resto = semPais.slice(2);
       variacoes.add(`${ddd}9${resto}`);
       variacoes.add(`55${ddd}9${resto}`);
     }
-    if(semPais.length === 11) {
-      const ddd = semPais.slice(0,2);
-      const resto = semPais.slice(3);
+    if (semPais.length === 11) {
+      const ddd = semPais.slice(0, 2), resto = semPais.slice(3);
       variacoes.add(`${ddd}${resto}`);
       variacoes.add(`55${ddd}${resto}`);
     }
 
     const orFilter = Array.from(variacoes).map(v => `telefone.eq.${v}`).join(',');
-    const res = await fetch(
-      `${SUPA_URL}/rest/v1/farmabot_pacientes?or=(${orFilter})&limit=1`,
-      { headers:{"apikey":SUPA_KEY,"Authorization":`Bearer ${SUPA_KEY}`} }
-    );
-    const data = await res.json();
-    return data?.[0] || null;
-  } catch(e) {
-    console.error('Erro buscarPaciente:', e.message);
+    const res = await supaFetch(`farmabot_pacientes?or=(${orFilter})&limit=1`);
+    return Array.isArray(res) ? res[0] || null : null;
+  } catch (e) {
+    console.error('Erro buscarPacientePorTelefone:', e.message);
     return null;
   }
 }
 
+// ── Identificar paciente por CPF ─────────────────────────────────────────────
 async function buscarPacientePorCpf(cpf) {
   try {
-    const cpfLimpo = cpf.replace(/\D/g,'');
-    if(cpfLimpo.length < 11) return null;
-    for(let i=0; i<3; i++) {
-      try {
-        const res = await fetch(
-          `${SUPA_URL}/rest/v1/farmabot_pacientes?cpf=eq.${cpfLimpo}&limit=1`,
-          { headers:{"apikey":SUPA_KEY,"Authorization":`Bearer ${SUPA_KEY}`} }
-        );
-        if(!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        return data?.[0] || null;
-      } catch(e) {
-        console.error(`buscarPacientePorCpf tentativa ${i+1} falhou: ${e.message}`);
-        if(i<2) await new Promise(r=>setTimeout(r,1000));
-      }
-    }
-    return null;
-  } catch(e) {
-    console.error('Erro buscarPacientePorCpf:', e.message);
-    return null;
-  }
+    const cpfLimpo = cpf.replace(/\D/g, '');
+    if (cpfLimpo.length < 11) return null;
+    const res = await supaFetch(`farmabot_pacientes?cpf=eq.${cpfLimpo}&limit=1`);
+    return Array.isArray(res) ? res[0] || null : null;
+  } catch (e) { return null; }
 }
 
-async function buscarFaqs() {
+// ── Buscar farmacêutico da UBS ────────────────────────────────────────────────
+async function buscarFarmaceuticoDaUbs(ubsNome) {
   try {
-    const res = await fetch(`${SUPA_URL}/rest/v1/farmabot_faqs?order=ordem.asc`,
-      { headers:{"apikey":SUPA_KEY,"Authorization":`Bearer ${SUPA_KEY}`} });
-    const data = await res.json();
-    return data?.length ? data : FAQ;
-  } catch { return FAQ; }
+    const res = await supaFetch(`farmabot_usuarios?ubs=eq.${encodeURIComponent(ubsNome)}&perfil=eq.farmaceutico&ativo=eq.true&limit=1`);
+    return Array.isArray(res) ? res[0] || null : null;
+  } catch (e) { return null; }
 }
 
+// ── Pendências ────────────────────────────────────────────────────────────────
 async function buscarPendenciaAberta(numero) {
   try {
-    const num11 = numero.replace(/\D/g,'').slice(-11);
-    const res = await fetch(
-      `${SUPA_URL}/rest/v1/farmabot_conversas?numero=eq.${num11}&pendente=eq.true&order=hora.desc&limit=1`,
-      { headers:{"apikey":SUPA_KEY,"Authorization":`Bearer ${SUPA_KEY}`} }
-    );
-    const data = await res.json();
-    return data?.[0] || null;
+    const num11 = numero.replace(/\D/g, '').slice(-11);
+    const res = await supaFetch(`farmabot_conversas?numero=eq.${num11}&pendente=eq.true&order=hora.desc&limit=1`);
+    return Array.isArray(res) ? res[0] || null : null;
   } catch { return null; }
 }
 
-async function salvarPendencia(pacienteNome, numero, mensagem, nomeUbs) {
+async function salvarPendencia(pacienteNome, numero, mensagem, ubsNome, farmaceuticoId) {
   try {
-    const num11 = numero.replace(/\D/g,'').slice(-11);
-    const hora = new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
-    await fetch(`${SUPA_URL}/rest/v1/farmabot_conversas`,{
-      method:'POST',
-      headers:{
-        "apikey":SUPA_KEY,
-        "Authorization":`Bearer ${SUPA_KEY}`,
-        "Content-Type":"application/json",
-        "Prefer":"resolution=merge-duplicates"
-      },
-      body:JSON.stringify({
-        id:`wa_${Date.now()}`,
+    const num11 = numero.replace(/\D/g, '').slice(-11);
+    const hora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    await supaFetch(`farmabot_conversas`, {
+      method: 'POST',
+      headers: { "Prefer": "resolution=merge-duplicates" },
+      body: JSON.stringify({
+        id: `wa_${Date.now()}`,
         paciente: pacienteNome || num11,
         numero: num11,
-        unidade: nomeUbs || null,
-        msgs:[
-          {tipo:'paciente',texto:mensagem,hora},
-          {tipo:'bot',texto:'Mensagem encaminhada ao farmacêutico. ⏳',hora}
+        unidade: ubsNome || null,
+        farmaceutico_id: farmaceuticoId || null,
+        msgs: [
+          { tipo: 'paciente', texto: mensagem, hora },
+          { tipo: 'bot', texto: '⏳ Mensagem encaminhada ao farmacêutico da sua unidade.', hora }
         ],
-        pendente:true,
+        pendente: true,
         hora
       })
     });
-  } catch(e){console.error('Erro pendência:',e.message);}
+  } catch (e) { console.error('Erro salvarPendencia:', e.message); }
+}
+
+async function adicionarMsgPendencia(conversaId, texto, tipo) {
+  try {
+    const conv = await supaFetch(`farmabot_conversas?id=eq.${conversaId}&select=msgs`);
+    const msgs = conv[0]?.msgs || [];
+    const hora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    msgs.push({ tipo, texto, hora });
+    await supaFetch(`farmabot_conversas?id=eq.${conversaId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ msgs })
+    });
+  } catch (e) { console.error('Erro adicionarMsg:', e.message); }
 }
 
 // ── Enviar mensagem via Meta Cloud API ────────────────────────────────────────
-// phoneNumberId: de qual número da UBS a resposta deve sair (cai no padrão se não informado)
-async function enviar(numero, texto, phoneNumberId) {
+async function enviar(numero, texto) {
   try {
-    const idParaEnviar = phoneNumberId || META_PHONE_NUMBER_ID_PADRAO;
-    const num11 = numero.replace(/\D/g,'').slice(-11);
+    const num11 = numero.replace(/\D/g, '').slice(-11);
     const res = await fetch(
-      `https://graph.facebook.com/${META_API_VERSION}/${idParaEnviar}/messages`,
+      `https://graph.facebook.com/${META_API_VERSION}/${META_PHONE_NUMBER_ID}/messages`,
       {
         method: 'POST',
         headers: {
@@ -340,247 +207,406 @@ async function enviar(numero, texto, phoneNumberId) {
       }
     );
     const data = await res.json();
-    console.log(`📤 Resposta Meta (via ${idParaEnviar}): ${JSON.stringify(data)}`);
-    if(data.error) {
-      console.error('Erro ao enviar mensagem Meta:', JSON.stringify(data.error));
+    if (data.error) {
+      console.error('❌ Erro Meta:', JSON.stringify(data.error));
     } else {
       console.log(`✅ Mensagem enviada para ${num11}`);
     }
     return data;
-  } catch(e) {
+  } catch (e) {
     console.error('Erro enviar:', e.message);
   }
 }
 
+// ── Motor de lembretes ────────────────────────────────────────────────────────
+function resolverHorarios(rotulo) {
+  if (/^\d{2}:\d{2}$/.test(rotulo)) return [rotulo];
+  return horariosPadraoCache.get(rotulo) || [];
+}
+
+function horaAtualSP() {
+  return new Date().toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
+}
+
+function dataAtualSP() {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+}
+
+async function jaFoiEnviado(pacienteId, medicamento, horario, data) {
+  try {
+    const res = await supaFetch(
+      `farmabot_lembretes_enviados?paciente_id=eq.${pacienteId}&medicamento=eq.${encodeURIComponent(medicamento)}&horario=eq.${encodeURIComponent(horario)}&data=eq.${data}&select=id&limit=1`
+    );
+    return Array.isArray(res) && res.length > 0;
+  } catch { return false; }
+}
+
+async function marcarEnviado(pacienteId, medicamento, horario, data) {
+  try {
+    await supaFetch(`farmabot_lembretes_enviados`, {
+      method: 'POST',
+      headers: { "Prefer": "resolution=ignore-duplicates" },
+      body: JSON.stringify({ paciente_id: pacienteId, medicamento, horario, data })
+    });
+  } catch (e) { console.error('Erro marcarEnviado:', e.message); }
+}
+
+async function checarLembretes() {
+  const agora = horaAtualSP();
+  const hoje = dataAtualSP();
+  console.log(`🕐 Lembretes: ${agora} | ${pacientesCache.length} paciente(s)`);
+
+  for (const paciente of pacientesCache) {
+    const medicamentos = paciente.medicamentos || [];
+    for (const med of medicamentos) {
+      const rotulos = med.horarios || [];
+      for (const rotulo of rotulos) {
+        const horariosResolvidos = resolverHorarios(rotulo);
+        if (!horariosResolvidos.includes(agora)) continue;
+
+        const jaEnviado = await jaFoiEnviado(paciente.id, med.nome, rotulo, hoje);
+        if (jaEnviado) continue;
+
+        const primeiroNome = (paciente.nome || '').split(' ')[0];
+        const msg = `💊 Olá, *${primeiroNome}*! Está na hora de tomar:\n\n*${med.nome}* — ${med.dose}\n\nApós tomar, não precisa responder nada. Qualquer dúvida, é só chamar aqui! 😊`;
+
+        await enviar(paciente.telefone, msg);
+        await marcarEnviado(paciente.id, med.nome, rotulo, hoje);
+        console.log(`💊 Lembrete: ${paciente.nome} | ${med.nome} | ${agora}`);
+      }
+    }
+  }
+}
+
+setInterval(checarLembretes, 60 * 1000);
+
 // ── Processar mensagem ────────────────────────────────────────────────────────
-// ubs: { nome_ubs, phone_number_id } — identifica de qual UBS veio a conversa
-async function processar(numero, texto, ubs) {
+async function processar(numero, texto) {
   const t = texto.toLowerCase().trim();
-  const phoneNumberId = ubs?.phone_number_id;
-  const nomeUbs = ubs?.nome_ubs;
 
   // 1. Emergência
-  if(GATILHOS_EMERGENCIA.some(g=>t.includes(g))) {
-    await enviar(numero,'🚨 *ATENÇÃO!* Pelos sintomas que descreveu, ligue *AGORA* para o SAMU: *192*\n\nNão espere — sua saúde é prioridade!', phoneNumberId);
+  if (GATILHOS_EMERGENCIA.some(g => t.includes(g))) {
+    await enviar(numero, '🚨 *ATENÇÃO!* Pelos sintomas que descreveu, ligue *AGORA* para o SAMU: *192*\n\nNão espere — sua saúde é prioridade!');
     return;
   }
 
   // 2. Reset
-  if(GATILHOS_RESET.some(g=>t.includes(g))) {
+  if (GATILHOS_RESET.some(g => t.includes(g))) {
     delete historicos[numero];
-    delete aguardandoCpf[numero];
+    delete fluxoIdentificacao[numero];
     delete pacientesIdentificados[numero];
-    await enviar(numero,'👋 Olá! Bem-vindo(a) à FarmaBot da UBS de Trindade-GO.\n\nEstou aqui para ajudar com dúvidas sobre seus medicamentos. Como posso te ajudar hoje?', phoneNumberId);
+    await enviar(numero, '👋 Olá! Bem-vindo(a) à Assistência Farmacêutica de Trindade-GO.\n\nEstou aqui para ajudar com dúvidas sobre seus medicamentos. Como posso te ajudar hoje?');
     return;
   }
 
-  // 3. Aguardando CPF
-  if(aguardandoCpf[numero]) {
-    const cpfDigitado = texto.replace(/\D/g,'');
-    if(cpfDigitado.length === 11) {
-      const pacienteCpf = await buscarPacientePorCpf(cpfDigitado);
-      if(pacienteCpf) {
-        pacientesIdentificados[numero] = pacienteCpf;
-        delete aguardandoCpf[numero];
-        await enviar(numero, `✅ Olá, *${pacienteCpf.nome.split(' ')[0]}*! Identifiquei seu cadastro.\n\nComo posso te ajudar com seus medicamentos hoje?`, phoneNumberId);
-        return;
-      } else {
-        delete aguardandoCpf[numero];
-        await enviar(numero, '⚠️ CPF não encontrado no nosso sistema. Continuarei sem identificação.\n\nComo posso ajudar?', phoneNumberId);
-        return;
-      }
-    } else {
-      delete aguardandoCpf[numero];
-      await enviar(numero, 'CPF inválido. Continuarei sem identificação. Como posso ajudar?', phoneNumberId);
-      return;
-    }
+  // 3. Fluxo de identificação em andamento
+  if (fluxoIdentificacao[numero]) {
+    await processarFluxoIdentificacao(numero, texto, t);
+    return;
   }
 
-  // 4. Identifica paciente (cache → telefone direto)
+  // 4. Tentativa de identificação por telefone
   let paciente = pacientesIdentificados[numero] || null;
-  if(!paciente) {
-    paciente = await buscarPaciente(numero);
-    if(paciente) pacientesIdentificados[numero] = paciente;
-  }
-  console.log(`📋 Paciente: ${paciente?.nome || 'não identificado'} | UBS: ${nomeUbs || '?'} | Numero: ${numero}`);
-
-  // 5. Pendência aberta
-  const pendenciaAberta = await buscarPendenciaAberta(numero);
-  if(pendenciaAberta) {
-    try {
-      const hora = new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
-      const msgsAtualizadas = [...(pendenciaAberta.msgs||[]), {tipo:'paciente',texto,hora}];
-      await fetch(`${SUPA_URL}/rest/v1/farmabot_conversas?id=eq.${pendenciaAberta.id}`,{
-        method:'PATCH',
-        headers:{"apikey":SUPA_KEY,"Authorization":`Bearer ${SUPA_KEY}`,"Content-Type":"application/json"},
-        body:JSON.stringify({msgs:msgsAtualizadas})
-      });
-    } catch(e){console.error('Erro atualizar pendência:',e.message);}
-    const ehSaudacao = ['oi','olá','ola','bom dia','boa tarde','boa noite'].some(g=>t.includes(g));
-    if(ehSaudacao) {
-      await enviar(numero,'⏳ Sua mensagem anterior já está com o farmacêutico da sua UBS.\n\nAssim que ele responder, você receberá uma mensagem aqui. Para urgências: SAMU 192.', phoneNumberId);
+  if (!paciente) {
+    paciente = await buscarPacientePorTelefone(numero);
+    if (paciente) {
+      pacientesIdentificados[numero] = paciente;
+      console.log(`✅ Paciente identificado por telefone: ${paciente.nome} | UBS: ${paciente.ubs_nome}`);
     }
+  }
+
+  // 5. Não identificado → iniciar fluxo de identificação
+  if (!paciente) {
+    // Verifica se é saudação simples — responde antes de pedir dados
+    const ehSaudacao = ['oi','olá','ola','bom dia','boa tarde','boa noite'].some(g => t.includes(g));
+    if (ehSaudacao) {
+      await enviar(numero, '👋 Olá! Bem-vindo(a) à Assistência Farmacêutica de Trindade-GO.\n\nPara te ajudar melhor, preciso identificar seu cadastro. Por favor, me informe seu *nome completo*:');
+    } else {
+      await enviar(numero, '👋 Olá! Para te ajudar preciso identificar seu cadastro.\n\nPor favor, me informe seu *nome completo*:');
+    }
+    fluxoIdentificacao[numero] = { etapa: 'nome', dadosParciais: {} };
     return;
   }
 
-  // 6. Estoque → farmacêutico
-  if(GATILHOS_ESTOQUE.some(g=>t.includes(g))) {
-    if(!paciente) {
-      aguardandoCpf[numero] = true;
-      await enviar(numero, '💊 Para verificar o medicamento, preciso identificar seu cadastro.\n\nPor favor, digite seu *CPF* (apenas números):', phoneNumberId);
+  // 6. Paciente identificado — processar mensagem normalmente
+  await processarMensagem(numero, texto, t, paciente);
+}
+
+// ── Fluxo de identificação manual ────────────────────────────────────────────
+async function processarFluxoIdentificacao(numero, texto, t) {
+  const fluxo = fluxoIdentificacao[numero];
+
+  if (fluxo.etapa === 'nome') {
+    if (texto.trim().split(' ').length < 2) {
+      await enviar(numero, 'Por favor, informe seu *nome completo* (nome e sobrenome):');
       return;
     }
-    await salvarPendencia(paciente?.nome, numero, texto, nomeUbs);
-    await enviar(numero,'Sua dúvida sobre disponibilidade de medicamento foi encaminhada para o farmacêutico da sua UBS. ⏳\n\nEm breve você receberá uma resposta. Para emergências: SAMU 192.', phoneNumberId);
+    fluxo.dadosParciais.nome = texto.trim();
+    fluxo.etapa = 'cpf';
+    await enviar(numero, `Obrigada, *${texto.trim().split(' ')[0]}*! Agora me informe seu *CPF* (apenas os números):`);
     return;
   }
 
-  // 7. FAQ
-  const faqs = await buscarFaqs();
-  const faqMatch = faqs.find(f => (f.gatilhos||[]).some(g=>t.includes(g)));
-  if(faqMatch) {
-    await enviar(numero, faqMatch.resposta, phoneNumberId);
+  if (fluxo.etapa === 'cpf') {
+    const cpfLimpo = texto.replace(/\D/g, '');
+    if (cpfLimpo.length !== 11) {
+      await enviar(numero, 'CPF inválido. Por favor, informe os *11 dígitos* do seu CPF (apenas números):');
+      return;
+    }
+
+    // Tenta encontrar por CPF
+    const pacienteCpf = await buscarPacientePorCpf(cpfLimpo);
+    if (pacienteCpf) {
+      pacientesIdentificados[numero] = pacienteCpf;
+      delete fluxoIdentificacao[numero];
+      console.log(`✅ Paciente identificado por CPF: ${pacienteCpf.nome}`);
+      await enviar(numero, `✅ Olá, *${pacienteCpf.nome.split(' ')[0]}*! Encontrei seu cadastro na ${pacienteCpf.ubs_nome}.\n\nComo posso te ajudar hoje?`);
+      return;
+    }
+
+    // CPF não encontrado → pedir UBS
+    fluxo.dadosParciais.cpf = cpfLimpo;
+    fluxo.etapa = 'ubs';
+    await enviar(numero, 'Não encontrei seu cadastro pelo CPF. Pode me dizer o nome da sua *UBS* (Unidade de Saúde)?');
     return;
   }
 
-  // 8. IA
-  if(!historicos[numero]) historicos[numero]=[];
-  historicos[numero].push({role:'user',content:texto});
-  if(historicos[numero].length>10) historicos[numero]=historicos[numero].slice(-10);
+  if (fluxo.etapa === 'ubs') {
+    // Não encontrado no sistema — salva para o farmacêutico verificar
+    const dadosParciais = fluxo.dadosParciais;
+    delete fluxoIdentificacao[numero];
 
-  try {
-    const ctx = paciente
-      ? `\nPACIENTE: ${paciente.nome}, ${paciente.idade} anos. Condições: ${(paciente.condicoes||[]).join(', ')}. Medicamentos: ${(paciente.medicamentos||[]).map(m=>`${m.nome} (${m.dose})`).join('; ')}.`
-      : '';
-    const res = await fetch(`${SUPA_URL}/functions/v1/rapid-handler`,{
-      method:'POST',
-      headers:{'Content-Type':'application/json','Authorization':`Bearer ${SUPA_KEY}`,'apikey':SUPA_KEY},
-      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:500,system:SYSTEM+ctx,messages:historicos[numero]})
-    });
-    const d = await res.json();
-    const resposta = d.content?.[0]?.text;
-    if(!resposta) throw new Error('Sem resposta da IA');
-    historicos[numero].push({role:'assistant',content:resposta});
-    await enviar(numero, resposta, phoneNumberId);
-  } catch(e) {
-    console.error('Erro IA:',e.message);
-    await enviar(numero,'Não consegui processar sua dúvida agora. Por favor, ligue para sua UBS ou compareça pessoalmente. Emergências: SAMU 192.', phoneNumberId);
+    await salvarPendencia(
+      dadosParciais.nome || numero,
+      numero,
+      `⚠️ PACIENTE NÃO CADASTRADO\nNome: ${dadosParciais.nome || '—'}\nCPF: ${dadosParciais.cpf || '—'}\nUBS informada: ${texto.trim()}\nMensagem original: (primeiro contato)`,
+      texto.trim(),
+      null
+    );
+
+    await enviar(numero,
+      `Obrigada, *${(dadosParciais.nome || '').split(' ')[0]}*! ` +
+      `Sua solicitação foi encaminhada para o farmacêutico da ${texto.trim()}.\n\n` +
+      `Em breve você receberá uma resposta. Para urgências: SAMU *192* 🚑`
+    );
+    return;
   }
 }
 
-// ── Webhook Meta — Verificação (GET) ──────────────────────────────────────────
+// ── Processar mensagem com paciente identificado ──────────────────────────────
+async function processarMensagem(numero, texto, t, paciente) {
+
+  // 1. Pendência aberta com farmacêutico
+  const pendenciaAberta = await buscarPendenciaAberta(numero);
+  if (pendenciaAberta) {
+    await adicionarMsgPendencia(pendenciaAberta.id, texto, 'paciente');
+    const ehSaudacao = ['oi','olá','ola','bom dia','boa tarde','boa noite'].some(g => t.includes(g));
+    if (ehSaudacao) {
+      await enviar(numero, '⏳ Sua mensagem anterior já está com o farmacêutico da sua UBS.\n\nAssim que ele responder, você receberá uma mensagem aqui. Para urgências: SAMU 192.');
+    }
+    return;
+  }
+
+  // 2. Saudação com paciente identificado
+  const ehSaudacao = ['oi','olá','ola','bom dia','boa tarde','boa noite'].some(g => t.includes(g));
+  if (ehSaudacao) {
+    const primeiroNome = paciente.nome.split(' ')[0];
+    await enviar(numero,
+      `👋 Olá, *${primeiroNome}*! Bem-vindo(a) de volta!\n\n` +
+      `Você está cadastrado(a) na *${paciente.ubs_nome}*.\n\n` +
+      `Como posso te ajudar hoje?`
+    );
+    return;
+  }
+
+  // 3. Dúvida de estoque → farmacêutico
+  if (GATILHOS_ESTOQUE.some(g => t.includes(g))) {
+    const farmaceutico = await buscarFarmaceuticoDaUbs(paciente.ubs_nome);
+    await salvarPendencia(paciente.nome, numero, texto, paciente.ubs_nome, farmaceutico?.id || null);
+    await enviar(numero,
+      `Sua dúvida sobre medicamento foi encaminhada para o farmacêutico da *${paciente.ubs_nome}*. ⏳\n\n` +
+      `Em breve você receberá uma resposta. Para emergências: SAMU 192.`
+    );
+    return;
+  }
+
+  // 4. FAQ
+  const faqMatch = FAQ.find(f => f.gatilhos && f.resposta && f.gatilhos.some(g => t.includes(g)));
+  if (faqMatch) {
+    await enviar(numero, faqMatch.resposta);
+    return;
+  }
+
+  // 5. IA (Claude via Supabase Edge Function)
+  if (!historicos[numero]) historicos[numero] = [];
+  historicos[numero].push({ role: 'user', content: texto });
+  if (historicos[numero].length > 10) historicos[numero] = historicos[numero].slice(-10);
+
+  try {
+    const ctx = `\nPACIENTE: ${paciente.nome}, ${paciente.idade || '?'} anos. ` +
+      `UBS: ${paciente.ubs_nome}. ` +
+      `Condições: ${(paciente.condicoes || []).join(', ') || 'não informado'}. ` +
+      `Medicamentos: ${(paciente.medicamentos || []).map(m => `${m.nome} (${m.dose})`).join('; ') || 'não informado'}.`;
+
+    const res = await fetch(`${SUPA_URL}/functions/v1/rapid-handler`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${SUPA_KEY}`,
+        'apikey': SUPA_KEY
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 500,
+        system: SYSTEM + ctx,
+        messages: historicos[numero]
+      })
+    });
+    const d = await res.json();
+    const resposta = d.content?.[0]?.text;
+    if (!resposta) throw new Error('Sem resposta da IA');
+    historicos[numero].push({ role: 'assistant', content: resposta });
+    await enviar(numero, resposta);
+  } catch (e) {
+    console.error('Erro IA:', e.message);
+    // Escala para farmacêutico se IA falhar
+    const farmaceutico = await buscarFarmaceuticoDaUbs(paciente.ubs_nome);
+    await salvarPendencia(paciente.nome, numero, texto, paciente.ubs_nome, farmaceutico?.id || null);
+    await enviar(numero,
+      'Não consegui responder sua dúvida agora. ' +
+      `Encaminhei para o farmacêutico da *${paciente.ubs_nome}*. ⏳\n\n` +
+      'Para emergências: SAMU 192.'
+    );
+  }
+}
+
+// ── Webhook Meta ──────────────────────────────────────────────────────────────
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
-
-  if(mode === 'subscribe' && token === META_VERIFY_TOKEN) {
-    console.log('✅ Webhook verificado com sucesso!');
+  if (mode === 'subscribe' && token === META_VERIFY_TOKEN) {
+    console.log('✅ Webhook verificado!');
     res.status(200).send(challenge);
   } else {
-    console.log('❌ Falha na verificação do webhook');
     res.sendStatus(403);
   }
 });
 
-// ── Webhook Meta — Recebimento de mensagens (POST) ────────────────────────────
 app.post('/webhook', async (req, res) => {
-  res.sendStatus(200); // responde imediatamente pra Meta não reenviar
-
+  res.sendStatus(200);
   try {
-    const entry = req.body.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const value = changes?.value;
-    const messages = value?.messages;
-    const phoneNumberId = value?.metadata?.phone_number_id;
-    const ubs = getUbsPorPhoneNumberId(phoneNumberId);
+    const messages = req.body.entry?.[0]?.changes?.[0]?.value?.messages;
+    if (!messages?.length) return;
 
-    if(!messages || messages.length === 0) return;
-
-    for(const msg of messages) {
-      if(msg.type !== 'text') continue;
-      const numero = msg.from; // já vem com código do país, ex: 5562985816375
+    for (const msg of messages) {
+      if (msg.type !== 'text') continue;
+      const numero = msg.from;
       const texto = msg.text?.body || '';
-      if(!texto.trim()) continue;
-
-      console.log(`📩 De: ${numero} | UBS: ${ubs.nome_ubs} | Msg: ${texto}`);
-      await processar(numero, texto, ubs);
+      if (!texto.trim()) continue;
+      console.log(`📩 De: ${numero} | Msg: ${texto}`);
+      await processar(numero, texto);
     }
-  } catch(e) {
-    console.error('Erro processar webhook:', e.message);
-  }
+  } catch (e) { console.error('Erro webhook:', e.message); }
 });
 
-// ── Endpoints ─────────────────────────────────────────────────────────────────
-app.get('/', (req,res) => res.json({
-  status: '✅ FarmaBot SUS Online! (Meta Cloud API multi-UBS)',
-  municipio: 'Trindade-GO — DAF',
-  versao: '3.3.0-meta-multiubs-lembretes',
-  ubsAtivas: ubsCache.size,
-  pacientesMonitorados: pacientesCache.length,
-  webhook: '/webhook'
-}));
+// ── Endpoint: farmacêutico responde ao paciente ───────────────────────────────
+// Chamado pelo painel do farmacêutico
+// Body: { conversa_id, numero_paciente, mensagem, nome_farmaceutico, nome_ubs }
+app.post('/responder', async (req, res) => {
+  const token = req.headers['x-admin-token'];
+  if (token !== ADMIN_TOKEN) return res.status(401).json({ erro: 'Não autorizado' });
 
-app.post('/enviar', async (req,res) => {
-  const { numero, mensagem, phone_number_id } = req.body;
+  const { conversa_id, numero_paciente, mensagem, nome_farmaceutico, nome_ubs } = req.body;
+  if (!conversa_id || !numero_paciente || !mensagem) {
+    return res.status(400).json({ erro: 'conversa_id, numero_paciente e mensagem são obrigatórios' });
+  }
+
   try {
-    const data = await enviar(numero, mensagem, phone_number_id);
-    res.json({ ok: true, data });
-  } catch(e) {
+    // Assina a mensagem com nome do farmacêutico e UBS
+    const textoAssinado = `👩‍⚕️ *${nome_farmaceutico || 'Farmacêutico(a)'}* — ${nome_ubs || 'Assistência Farmacêutica Trindade'}\n\n${mensagem}`;
+
+    // Envia via WhatsApp
+    const resultadoEnvio = await enviar(numero_paciente, textoAssinado);
+    if (resultadoEnvio?.error) {
+      return res.status(500).json({ erro: 'Falha ao enviar mensagem WhatsApp', detalhe: resultadoEnvio.error });
+    }
+
+    // Salva a resposta no histórico da conversa
+    await adicionarMsgPendencia(conversa_id, textoAssinado, 'farmaceutico');
+
+    // Marca conversa como resolvida
+    await supaFetch(`farmabot_conversas?id=eq.${conversa_id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ pendente: false })
+    });
+
+    // Recarrega cache de pacientes (caso tenha sido atualizado)
+    await carregarPacientesCache();
+
+    res.json({ ok: true, mensagem: 'Resposta enviada e conversa resolvida' });
+  } catch (e) {
+    console.error('Erro /responder:', e.message);
     res.status(500).json({ erro: e.message });
   }
 });
 
-// ── Admin: gerenciar UBS ───────────────────────────────────────────────────────
+// ── Admin: UBSs ───────────────────────────────────────────────────────────────
 function checkAdmin(req, res) {
   const token = req.headers['x-admin-token'] || req.query.token;
-  if (token !== ADMIN_TOKEN) {
-    res.status(401).json({ erro: 'Não autorizado' });
-    return false;
-  }
+  if (token !== ADMIN_TOKEN) { res.status(401).json({ erro: 'Não autorizado' }); return false; }
   return true;
 }
 
-app.get('/admin/ubs', (req, res) => {
+app.get('/admin/ubs', async (req, res) => {
   if (!checkAdmin(req, res)) return;
-  res.json({ total: ubsCache.size, ubs: Array.from(ubsCache.values()) });
+  try {
+    const data = await supaFetch('farmabot_ubs?select=*&status=eq.ativo');
+    res.json({ total: Array.isArray(data) ? data.length : 0, ubs: data || [] });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
 });
 
 app.post('/admin/ubs', async (req, res) => {
   if (!checkAdmin(req, res)) return;
   const { nome_ubs, phone_number_id, numero_whatsapp, display_name } = req.body;
-  if (!nome_ubs || !phone_number_id) {
-    return res.status(400).json({ erro: 'nome_ubs e phone_number_id são obrigatórios' });
-  }
+  if (!nome_ubs) return res.status(400).json({ erro: 'nome_ubs é obrigatório' });
   try {
-    const r = await fetch(`${SUPA_URL}/rest/v1/farmabot_ubs`, {
+    const data = await supaFetch('farmabot_ubs', {
       method: 'POST',
-      headers: {
-        "apikey": SUPA_KEY,
-        "Authorization": `Bearer ${SUPA_KEY}`,
-        "Content-Type": "application/json",
-        "Prefer": "return=representation"
-      },
-      body: JSON.stringify({ nome_ubs, phone_number_id, numero_whatsapp, display_name, status: 'ativo' })
+      headers: { "Prefer": "return=representation" },
+      body: JSON.stringify({
+        nome_ubs,
+        phone_number_id: phone_number_id || META_PHONE_NUMBER_ID, // usa o central se não informar
+        numero_whatsapp: numero_whatsapp || '62 9410-3358',
+        display_name: display_name || 'Assistência Farmacêutica Trindade',
+        status: 'ativo'
+      })
     });
-    const data = await r.json();
-    await carregarUbsCache();
     res.json({ ok: true, data });
-  } catch (e) {
-    res.status(500).json({ erro: e.message });
-  }
+  } catch (e) { res.status(500).json({ erro: e.message }); }
 });
 
-app.post('/admin/recarregar-ubs', async (req, res) => {
+app.post('/admin/recarregar', async (req, res) => {
   if (!checkAdmin(req, res)) return;
-  await carregarUbsCache();
   await carregarPacientesCache();
   await carregarHorariosPadraoCache();
-  res.json({ ok: true, ubs: ubsCache.size, pacientes: pacientesCache.length, horarios: horariosPadraoCache.size });
+  res.json({ ok: true, pacientes: pacientesCache.length, horarios: horariosPadraoCache.size });
 });
 
+// ── Status ────────────────────────────────────────────────────────────────────
+app.get('/', (req, res) => res.json({
+  status: '✅ FarmaBot SUS Online',
+  versao: '4.0.0-numero-central',
+  municipio: 'Trindade-GO — DAF',
+  numero_central: '62 9410-3358',
+  pacientesMonitorados: pacientesCache.length,
+  horariosPadrao: horariosPadraoCache.size,
+  webhook: '/webhook',
+  endpoints: ['POST /responder', 'GET /admin/ubs', 'POST /admin/ubs', 'POST /admin/recarregar']
+}));
+
 app.listen(PORT, () => {
-  console.log(`✅ FarmaBot SUS (Meta Cloud API) rodando na porta ${PORT}`);
-  console.log(`📱 Webhook em /webhook`);
-  console.log(`Município: Trindade-GO | DAF | v3.2.0-meta-multiubs`);
+  console.log(`✅ FarmaBot SUS v4.0.0 rodando na porta ${PORT}`);
+  console.log(`📱 Número central: 62 9410-3358 (${META_PHONE_NUMBER_ID})`);
+  console.log(`🔗 Webhook: /webhook`);
 });
