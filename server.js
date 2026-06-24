@@ -573,30 +573,35 @@ app.post('/api/claude', async (req, res) => {
   }
 });
 
-// ── Proxy Gemini ──────────────────────────────────────────────────────────────
+// ── Proxy Groq (análise clínica IA) ──────────────────────────────────────────
 app.post('/api/gemini', async (req, res) => {
-  const GEMINI_KEY = process.env.GEMINI_KEY;
-  if (!GEMINI_KEY) return res.status(500).json({ erro: 'GEMINI_KEY não configurada' });
+  const GROQ_KEY = process.env.GROQ_KEY;
+  if (!GROQ_KEY) return res.status(500).json({ erro: 'GROQ_KEY não configurada' });
   try {
     const { prompt } = req.body;
     if (!prompt) return res.status(400).json({ erro: 'prompt é obrigatório' });
-    const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-8b:generateContent?key=${GEMINI_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: 1000, temperature: 0.3 }
-        })
-      }
-    );
+    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${GROQ_KEY}`
+      },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages: [
+          { role: 'system', content: 'Você é um farmacêutico clínico especialista em farmácia hospitalar e geriatria. Analise prescrições de forma objetiva e prática para farmacêuticos do SUS.' },
+          { role: 'user', content: prompt }
+        ],
+        max_tokens: 1000,
+        temperature: 0.3
+      })
+    });
     const d = await r.json();
-    const texto = d.candidates?.[0]?.content?.parts?.[0]?.text;
+    const texto = d.choices?.[0]?.message?.content;
     if (!texto) throw new Error(JSON.stringify(d));
     res.json({ ok: true, texto });
   } catch (e) {
-    console.error('Erro /api/gemini:', e.message);
+    console.error('Erro /api/gemini (Groq):', e.message);
     res.status(500).json({ erro: e.message });
   }
 });
