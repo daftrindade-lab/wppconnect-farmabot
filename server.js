@@ -551,6 +551,28 @@ app.post('/responder', async (req, res) => {
   }
 });
 
+// ── Proxy Claude ──────────────────────────────────────────────────────────────
+app.post('/api/claude', async (req, res) => {
+  const CLAUDE_KEY = process.env.CLAUDE_KEY;
+  if (!CLAUDE_KEY) return res.status(500).json({ erro: 'CLAUDE_KEY não configurada' });
+  try {
+    const { model, max_tokens, system, messages } = req.body;
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': CLAUDE_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({ model: model||'claude-sonnet-4-6', max_tokens: max_tokens||1000, system: system||'', messages: messages||[] })
+    });
+    const d = await r.json();
+    res.json(d);
+  } catch (e) {
+    res.status(500).json({ erro: e.message });
+  }
+});
+
 // ── Proxy Gemini ──────────────────────────────────────────────────────────────
 app.post('/api/gemini', async (req, res) => {
   const GEMINI_KEY = process.env.GEMINI_KEY;
