@@ -551,7 +551,35 @@ app.post('/responder', async (req, res) => {
   }
 });
 
-// ── Admin: UBSs ───────────────────────────────────────────────────────────────
+// ── Proxy Gemini ──────────────────────────────────────────────────────────────
+app.post('/api/gemini', async (req, res) => {
+  const GEMINI_KEY = process.env.GEMINI_KEY;
+  if (!GEMINI_KEY) return res.status(500).json({ erro: 'GEMINI_KEY não configurada' });
+  try {
+    const { prompt } = req.body;
+    if (!prompt) return res.status(400).json({ erro: 'prompt é obrigatório' });
+    const r = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { maxOutputTokens: 1000, temperature: 0.3 }
+        })
+      }
+    );
+    const d = await r.json();
+    const texto = d.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!texto) throw new Error(JSON.stringify(d));
+    res.json({ ok: true, texto });
+  } catch (e) {
+    console.error('Erro /api/gemini:', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
+
+
 function checkAdmin(req, res) {
   const token = req.headers['x-admin-token'] || req.query.token;
   if (token !== ADMIN_TOKEN) { res.status(401).json({ erro: 'Não autorizado' }); return false; }
