@@ -280,6 +280,75 @@ async function checarLembretes() {
 
 setInterval(checarLembretes, 60 * 1000);
 
+// ── Motor de alertas de renovação de receita ─────────────────────────────────
+async function checarRenovacaoReceitas() {
+  try {
+    const hoje = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+    const hojeStr = hoje.toLocaleDateString('en-CA');
+    console.log(`📋 Checando renovação de receitas — ${hojeStr}`);
+
+    const res = await fetch(`${SUPA_URL}/rest/v1/farmabot_pacientes?select=id,nome,telefone,ubs_nome,medicamentos`, {
+      headers: { "apikey": SUPA_KEY, "Authorization": `Bearer ${SUPA_KEY}` }
+    });
+    const pacientes = await res.json();
+    if (!Array.isArray(pacientes)) return;
+
+    for (const paciente of pacientes) {
+      const meds = paciente.medicamentos || [];
+      const medsVencendo = meds.filter(m => {
+        if (!m.data_prescricao) return false;
+        const dp = new Date(m.data_prescricao);
+        const dias = Math.floor((hoje - dp) / (1000 * 60 * 60 * 24));
+        return dias >= 150 && dias <= 160;
+      });
+      if (!medsVencendo.length) continue;
+
+      const primeiroNome = (paciente.nome || '').split(' ')[0];
+      const listaMeds = medsVencendo.map(m => `• ${m.nome}`).join('\n');
+      const dataVenc = new Date(medsVencendo[0].data_prescricao);
+      dataVenc.setMonth(dataVenc.getMonth() + 6);
+      const dataVencStr = dataVenc.toLocaleDateString('pt-BR');
+
+      const msgPaciente =
+        `📋 Olá, *${primeiroNome}*! Sua receita médica está próxima do vencimento.\n\n` +
+        `Os seguintes medicamentos precisam de receita nova até *${dataVencStr}*:\n${listaMeds}\n\n` +
+        `Por favor, agende uma consulta com seu médico com antecedência para não ficar sem medicamento. 💊`;
+
+      await enviar(paciente.telefone, msgPaciente);
+
+      // Salva alerta para o farmacêutico ver no painel
+      await supaFetch('farmabot_alertas_renovacao', {
+        method: 'POST',
+        headers: { "Prefer": "resolution=ignore-duplicates" },
+        body: JSON.stringify({
+          paciente_id: paciente.id,
+          paciente_nome: paciente.nome,
+          ubs_nome: paciente.ubs_nome,
+          medicamentos: medsVencendo.map(m => m.nome),
+          data_alerta: hojeStr,
+          status: 'pendente'
+        })
+      });
+      console.log(`📋 Alerta renovação: ${paciente.nome} | ${medsVencendo.length} med(s)`);
+    }
+  } catch (e) { console.error('Erro renovação:', e.message); }
+}
+
+// Agenda para rodar todo dia às 8h (Brasília)
+function agendarRenovacao() {
+  const agora = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+  const prox = new Date(agora);
+  prox.setHours(8, 0, 0, 0);
+  if (agora >= prox) prox.setDate(prox.getDate() + 1);
+  const ms = prox - agora;
+  setTimeout(() => {
+    checarRenovacaoReceitas();
+    setInterval(checarRenovacaoReceitas, 24 * 60 * 60 * 1000);
+  }, ms);
+  console.log(`📋 Renovação agendada para 08:00 (em ${Math.round(ms/60000)} min)`);
+}
+agendarRenovacao();
+
 // ── Processar mensagem ────────────────────────────────────────────────────────
 async function processar(numero, texto) {
   const t = texto.toLowerCase().trim();
