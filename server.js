@@ -76,6 +76,10 @@ const FAQ = [
 const GATILHOS_ESTOQUE = ['tem esse','tem o remédio','tem remedio','disponível','disponivel','acabou','faltou','buscar remédio','retirar','pegar remédio','estoque','medicamento disponível','tem metformina','tem losartana','tem insulina','tem dipirona','tem o medicamento','tem esse remédio','tem esse remedio','tem ','remédio disponível','remedio disponivel','buscar o remédio'];
 const GATILHOS_RESET = ['reiniciar','recomeçar','comecar de novo','começar de novo','menu','início','inicio','voltar'];
 const GATILHOS_EMERGENCIA = ['dor no peito','falta de ar','desmaio','pressão muito alta','convulsão','infarto','avc','sangramento excessivo','inconsciente'];
+const GATILHOS_QUEIXA = ['efeito colateral','reação','reacao','me fez mal','passou mal','enjoei','enjoo','tontura','coceira','alergia','inchaço','inchaco','vermelhidão','vermelhidao','dor de barriga','náusea','nausea','vomitei','vômito','vomito','dor de cabeça','dor de cabeca','fraqueza','mal estar','mal-estar','queixa','reclamação','reclamacao','não estou bem com o remédio','remédio me faz mal'];
+
+// Estado do fluxo de queixas
+const fluxoQueixa = {}; // numero -> { etapa, dados }
 
 const SYSTEM = `Você é a FarmaBot, assistente farmacêutica virtual da Assistência Farmacêutica de Trindade-GO.
 PERFIL: Idosos com HAS/DM, polimedicados, baixa escolaridade.
@@ -543,10 +547,83 @@ async function processarFluxoIdentificacao(numero, texto, t) {
   }
 }
 
-// ── Processar mensagem com paciente identificado ──────────────────────────────
+async function processarFluxoQueixa(numero, texto, t, paciente) {
+  const fluxo = fluxoQueixa[numero];
+
+  if (fluxo.etapa === 'medicamento') {
+    fluxo.dados.medicamento = t.includes('não sei') || t.includes('nao sei') ? null : texto;
+    fluxo.etapa = 'gravidade';
+    await enviar(numero,
+      `Obrigada por me contar. Agora me diga: como você está se sentindo?\n\n` +
+      `1️⃣ Leve — incomoda mas consigo fazer minhas atividades\n` +
+      `2️⃣ Moderada — está atrapalhando minhas atividades\n` +
+      `3️⃣ Grave — precisei ou preciso de atendimento médico\n\n` +
+      `Responda com o número (1, 2 ou 3):`
+    );
+    return;
+  }
+
+  if (fluxo.etapa === 'gravidade') {
+    let gravidade = 'moderada';
+    if (t.includes('1') || t.includes('leve')) gravidade = 'leve';
+    else if (t.includes('3') || t.includes('grave')) gravidade = 'grave';
+    else if (t.includes('2') || t.includes('moderada')) gravidade = 'moderada';
+
+    fluxo.dados.gravidade = gravidade;
+    delete fluxoQueixa[numero];
+
+    // Salva a queixa
+    try {
+      await supaFetch('farmabot_queixas', {
+        method: 'POST',
+        headers: { "Prefer": "resolution=ignore-duplicates" },
+        body: JSON.stringify({
+          paciente_id: paciente?.id || null,
+          paciente_nome: paciente?.nome || numero,
+          telefone: numero,
+          ubs_nome: paciente?.ubs_nome || null,
+          descricao: fluxo.dados.descricao,
+          medicamento: fluxo.dados.medicamento,
+          gravidade,
+          status: 'pendente',
+          data_registro: new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' })
+        })
+      });
+    } catch(e) { console.error('Erro salvar queixa:', e.message); }
+
+    if (gravidade === 'grave') {
+      await enviar(numero,
+        `🚨 Sua queixa foi registrada como *GRAVE* e encaminhada urgentemente para o farmacêutico da sua UBS.\n\n` +
+        `Se precisar de atendimento imediato, ligue para o *SAMU: 192*.\n\nCuide-se! 💚`
+      );
+    } else {
+      await enviar(numero,
+        `✅ Sua queixa foi registrada e encaminhada para o farmacêutico da sua UBS.\n\n` +
+        `Em breve você receberá orientações. Para urgências: SAMU *192* 🚑`
+      );
+    }
+    return;
+  }
+}
+
+
 async function processarMensagem(numero, texto, t, paciente) {
 
-  // 1. Pendência aberta com farmacêutico
+  // 1.5 Fluxo de queixa em andamento
+  if (fluxoQueixa[numero]) {
+    await processarFluxoQueixa(numero, texto, t, paciente);
+    return;
+  }
+
+  // 1.6 Detecção automática de queixa
+  if (GATILHOS_QUEIXA.some(g => t.includes(g))) {
+    fluxoQueixa[numero] = { etapa: 'medicamento', dados: { descricao: texto } };
+    await enviar(numero,
+      `Entendo que você está passando por algum desconforto. Vou registrar sua queixa para o farmacêutico.\n\n` +
+      `Qual medicamento você acha que está causando esse problema? (Se não souber, escreva "não sei")`
+    );
+    return;
+  }
   const pendenciaAberta = await buscarPendenciaAberta(numero);
   if (pendenciaAberta) {
     await adicionarMsgPendencia(pendenciaAberta.id, texto, 'paciente');
@@ -908,6 +985,105 @@ app.post('/admin/recarregar', async (req, res) => {
   await carregarPacientesCache();
   await carregarHorariosPadraoCache();
   res.json({ ok: true, pacientes: pacientesCache.length, horarios: horariosPadraoCache.size });
+});
+
+// ── Registro de queixas/reações adversas ─────────────────────────────────────
+app.post('/queixa', async (req, res) => {
+  const token = req.headers['x-admin-token'];
+  if (token !== ADMIN_TOKEN) return res.status(401).json({ erro: 'Não autorizado' });
+  const { paciente_id, paciente_nome, telefone, ubs_nome, descricao, medicamento, gravidade } = req.body;
+  if (!descricao) return res.status(400).json({ erro: 'descricao é obrigatória' });
+  try {
+    const data = await supaFetch('farmabot_queixas', {
+      method: 'POST',
+      headers: { "Prefer": "return=representation" },
+      body: JSON.stringify({
+        paciente_id: paciente_id || null,
+        paciente_nome: paciente_nome || 'Não identificado',
+        telefone: telefone || null,
+        ubs_nome: ubs_nome || null,
+        descricao,
+        medicamento: medicamento || null,
+        gravidade: gravidade || 'moderada',
+        status: 'pendente',
+        data_registro: new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' })
+      })
+    });
+    res.json({ ok: true, data });
+  } catch(e) { res.status(500).json({ erro: e.message }); }
+});
+
+app.get('/queixas', async (req, res) => {
+  const token = req.headers['x-admin-token'];
+  if (token !== ADMIN_TOKEN) return res.status(401).json({ erro: 'Não autorizado' });
+  try {
+    const { ubs, status } = req.query;
+    let path = 'farmabot_queixas?order=data_registro.desc&limit=100';
+    if (ubs) path += `&ubs_nome=eq.${encodeURIComponent(ubs)}`;
+    if (status) path += `&status=eq.${status}`;
+    const data = await supaFetch(path);
+    res.json({ ok: true, queixas: data || [] });
+  } catch(e) { res.status(500).json({ erro: e.message }); }
+});
+
+app.patch('/queixa/:id', async (req, res) => {
+  const token = req.headers['x-admin-token'];
+  if (token !== ADMIN_TOKEN) return res.status(401).json({ erro: 'Não autorizado' });
+  try {
+    await supaFetch(`farmabot_queixas?id=eq.${req.params.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(req.body)
+    });
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ erro: e.message }); }
+});
+
+// ── Mapa de cobertura (gestor) ────────────────────────────────────────────────
+app.get('/cobertura', async (req, res) => {
+  const token = req.headers['x-admin-token'];
+  if (token !== ADMIN_TOKEN) return res.status(401).json({ erro: 'Não autorizado' });
+  try {
+    const [pacientes, conversas, queixas, alertas] = await Promise.all([
+      supaFetch('farmabot_pacientes?select=id,ubs_nome,medicamentos,condicoes'),
+      supaFetch('farmabot_conversas?pendente=eq.true&select=id,unidade'),
+      supaFetch('farmabot_queixas?status=eq.pendente&select=id,ubs_nome'),
+      supaFetch('farmabot_alertas_renovacao?status=eq.pendente&select=id,ubs_nome'),
+    ]);
+
+    // Agrupa por UBS
+    const mapa = {};
+    const ubsList = await supaFetch('farmabot_ubs?select=nome_ubs&status=eq.ativo');
+    (ubsList||[]).forEach(u => {
+      mapa[u.nome_ubs] = { ubs: u.nome_ubs, pacientes: 0, beers: 0, renovacoes: 0, conversas: 0, queixas: 0 };
+    });
+
+    // Pacientes + Beers
+    (Array.isArray(pacientes) ? pacientes : []).forEach(p => {
+      if (!p.ubs_nome) return;
+      if (!mapa[p.ubs_nome]) mapa[p.ubs_nome] = { ubs: p.ubs_nome, pacientes: 0, beers: 0, renovacoes: 0, conversas: 0, queixas: 0 };
+      mapa[p.ubs_nome].pacientes++;
+      const beers = (p.medicamentos||[]).filter(m => m.beers_alerta).length;
+      mapa[p.ubs_nome].beers += beers;
+    });
+
+    // Conversas pendentes
+    (Array.isArray(conversas) ? conversas : []).forEach(c => {
+      if (c.unidade && mapa[c.unidade]) mapa[c.unidade].conversas++;
+    });
+
+    // Queixas pendentes
+    (Array.isArray(queixas) ? queixas : []).forEach(q => {
+      if (q.ubs_nome && mapa[q.ubs_nome]) mapa[q.ubs_nome].queixas++;
+    });
+
+    // Renovações pendentes
+    (Array.isArray(alertas) ? alertas : []).forEach(a => {
+      if (a.ubs_nome && mapa[a.ubs_nome]) mapa[a.ubs_nome].renovacoes++;
+    });
+
+    const resultado = Object.values(mapa).sort((a,b) => b.pacientes - a.pacientes);
+    res.json({ ok: true, cobertura: resultado });
+  } catch(e) { res.status(500).json({ erro: e.message }); }
 });
 
 // ── Status ────────────────────────────────────────────────────────────────────
