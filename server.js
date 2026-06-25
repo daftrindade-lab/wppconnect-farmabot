@@ -922,7 +922,47 @@ app.get('/', (req, res) => res.json({
   endpoints: ['POST /responder', 'GET /admin/ubs', 'POST /admin/ubs', 'POST /admin/recarregar']
 }));
 
-// ── Farmácia da família ───────────────────────────────────────────────────────
+// ── Endpoint: enviar dica de educação em saúde manualmente ───────────────────
+app.post('/educacao/enviar', async (req, res) => {
+  const token = req.headers['x-admin-token'];
+  if (token !== ADMIN_TOKEN) return res.status(401).json({ erro: 'Não autorizado' });
+
+  const { texto, categoria, ubs } = req.body;
+  if (!texto) return res.status(400).json({ erro: 'texto é obrigatório' });
+
+  try {
+    // Busca pacientes elegíveis
+    let path = `farmabot_pacientes?select=id,nome,telefone,condicoes`;
+    if (ubs) path += `&ubs_nome=eq.${encodeURIComponent(ubs)}`;
+
+    const pacientes = await supaFetch(path);
+    if (!Array.isArray(pacientes)) return res.status(500).json({ erro: 'Erro ao buscar pacientes' });
+
+    // Filtra por categoria se necessário
+    const elegiveis = pacientes.filter(p => {
+      if (!p.telefone) return false;
+      if (categoria === 'HAS') return (p.condicoes||[]).some(c => c.toUpperCase().includes('HAS') || c.toUpperCase().includes('HIPERTENS'));
+      if (categoria === 'DM') return (p.condicoes||[]).some(c => c.toUpperCase().includes('DM') || c.toUpperCase().includes('DIABET'));
+      return true; // Medicamentos = todos
+    });
+
+    let enviados = 0;
+    for (const p of elegiveis) {
+      const primeiroNome = (p.nome || '').split(' ')[0];
+      const msg = `🌟 Olá, *${primeiroNome}*! Aqui está a dica de saúde desta semana:\n\n${texto}\n\n_Sua Assistência Farmacêutica de Trindade-GO_ 💚`;
+      await enviar(p.telefone, msg);
+      enviados++;
+    }
+
+    console.log(`📚 Educação manual: ${enviados} mensagem(s) enviada(s) | categoria: ${categoria||'todas'}`);
+    res.json({ ok: true, enviados });
+  } catch(e) {
+    console.error('Erro /educacao/enviar:', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
+
+
 // GET /familia/:paciente_id — busca vínculos familiares
 app.get('/familia/:paciente_id', async (req, res) => {
   const token = req.headers['x-admin-token'];
