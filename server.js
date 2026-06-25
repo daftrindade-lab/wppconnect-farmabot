@@ -349,6 +349,87 @@ function agendarRenovacao() {
 }
 agendarRenovacao();
 
+// ── Motor de educação em saúde semanal ───────────────────────────────────────
+// Segunda-feira às 8h, alternando: semana ímpar = dica sobre condição, semana par = dica sobre medicamentos
+
+const DICAS_CONDICAO = {
+  'HAS': [
+    '❤️ *Dica sobre Pressão Alta*\n\nReduzir o sal na alimentação é um dos passos mais importantes para controlar a pressão. Evite alimentos industrializados, embutidos e temperos prontos. Prefira temperos naturais como alho, cebola e ervas.',
+    '❤️ *Dica sobre Pressão Alta*\n\nCaminhar 30 minutos por dia, 5 vezes por semana, ajuda a baixar a pressão naturalmente. Comece devagar e aumente o ritmo gradualmente. Consulte seu médico antes de iniciar exercícios.',
+    '❤️ *Dica sobre Pressão Alta*\n\nMeça sua pressão regularmente e anote os valores. Leve esse registro às consultas — ajuda muito o médico a ajustar o tratamento. Pressão ideal: abaixo de 130x80 mmHg.',
+  ],
+  'DM': [
+    '🩺 *Dica sobre Diabetes*\n\nEvite açúcar, refrigerantes e sucos industrializados. Prefira frutas inteiras (não suco), verduras e alimentos integrais. Coma em pequenas porções várias vezes ao dia.',
+    '🩺 *Dica sobre Diabetes*\n\nCuide dos seus pés todos os dias: lave com água morna, seque bem entre os dedos e observe se tem feridas ou calosidades. Diabéticos têm mais dificuldade de cicatrizar.',
+    '🩺 *Dica sobre Diabetes*\n\nFaça a glicemia em jejum regularmente. Valores normais: entre 70 e 100 mg/dL em jejum. Se estiver acima de 250 mg/dL com sintomas (sede excessiva, urina frequente), procure atendimento.',
+  ],
+  'DEFAULT': [
+    '💊 *Dica de Saúde*\n\nTome seus remédios sempre no mesmo horário. Isso ajuda o corpo a manter o nível certo do medicamento no sangue e melhora muito o resultado do tratamento.',
+    '💊 *Dica de Saúde*\n\nNunca pare de tomar os remédios sem falar com o médico, mesmo que esteja se sentindo bem. Muitas doenças crônicas não têm sintomas quando estão controladas — é o remédio fazendo efeito!',
+    '💊 *Dica de Saúde*\n\nGuarde seus remédios em local fresco, seco e sem luz direta do sol. Evite guardar no banheiro ou cozinha — o calor e a umidade estragam os medicamentos.',
+  ]
+};
+
+const DICAS_MEDICAMENTOS = [
+  '💊 *Dica sobre seus remédios*\n\nSe esquecer de tomar uma dose, tome assim que lembrar — *a não ser que esteja quase na hora da próxima*. Nesse caso, pule a dose esquecida. Nunca tome duas doses de uma vez.',
+  '💊 *Dica sobre seus remédios*\n\nAlguns remédios não podem ser partidos ou mastigados — como os de liberação prolongada. Sempre verifique com o farmacêutico se pode ou não partir o comprimido.',
+  '💊 *Dica sobre seus remédios*\n\nAvise sempre seu médico e dentista sobre todos os remédios que está tomando, incluindo vitaminas e remédios caseiros. Alguns podem interagir entre si.',
+  '💊 *Dica sobre seus remédios*\n\nNão tome remédios vencidos. Verifique a data de validade antes de usar e descarte medicamentos vencidos na farmácia — não jogue no lixo comum ou na pia.',
+  '💊 *Dica sobre seus remédios*\n\nBeba bastante água ao tomar seus remédios (pelo menos meio copo). Isso ajuda na absorção e protege o estômago e os rins.',
+];
+
+function getDicaSemana(paciente) {
+  const agora = new Date();
+  const semanaAno = Math.ceil((agora - new Date(agora.getFullYear(), 0, 1)) / (7 * 24 * 60 * 60 * 1000));
+  const ehSemanaImpar = semanaAno % 2 !== 0;
+
+  if (ehSemanaImpar) {
+    // Dica sobre condição do paciente
+    const condicoes = (paciente.condicoes || []).map(c => c.toUpperCase());
+    if (condicoes.some(c => c.includes('HAS') || c.includes('HIPERTENS'))) {
+      const dicas = DICAS_CONDICAO['HAS'];
+      return dicas[semanaAno % dicas.length];
+    }
+    if (condicoes.some(c => c.includes('DM') || c.includes('DIABET'))) {
+      const dicas = DICAS_CONDICAO['DM'];
+      return dicas[semanaAno % dicas.length];
+    }
+    const dicas = DICAS_CONDICAO['DEFAULT'];
+    return dicas[semanaAno % dicas.length];
+  } else {
+    // Dica sobre medicamentos
+    return DICAS_MEDICAMENTOS[semanaAno % DICAS_MEDICAMENTOS.length];
+  }
+}
+
+async function enviarEducacaoSemanal() {
+  try {
+    const agora = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+    if (agora.getDay() !== 1) return; // Só segunda-feira (0=dom, 1=seg)
+    console.log('📚 Enviando educação em saúde semanal...');
+
+    const res = await fetch(`${SUPA_URL}/rest/v1/farmabot_pacientes?select=id,nome,telefone,condicoes,medicamentos`, {
+      headers: { "apikey": SUPA_KEY, "Authorization": `Bearer ${SUPA_KEY}` }
+    });
+    const pacientes = await res.json();
+    if (!Array.isArray(pacientes)) return;
+
+    let enviados = 0;
+    for (const paciente of pacientes) {
+      if (!paciente.telefone) continue;
+      const dica = getDicaSemana(paciente);
+      const primeiroNome = (paciente.nome || '').split(' ')[0];
+      const msg = `🌟 Olá, *${primeiroNome}*! Aqui está a dica de saúde desta semana:\n\n${dica}\n\n_Sua Assistência Farmacêutica de Trindade-GO_ 💚`;
+      await enviar(paciente.telefone, msg);
+      enviados++;
+    }
+    console.log(`📚 Educação semanal: ${enviados} mensagem(s) enviada(s)`);
+  } catch(e) { console.error('Erro educação semanal:', e.message); }
+}
+
+// Checa todo dia às 8h se é segunda-feira
+setInterval(enviarEducacaoSemanal, 24 * 60 * 60 * 1000);
+
 // ── Processar mensagem ────────────────────────────────────────────────────────
 async function processar(numero, texto) {
   const t = texto.toLowerCase().trim();
@@ -841,7 +922,44 @@ app.get('/', (req, res) => res.json({
   endpoints: ['POST /responder', 'GET /admin/ubs', 'POST /admin/ubs', 'POST /admin/recarregar']
 }));
 
-app.listen(PORT, () => {
+// ── Farmácia da família ───────────────────────────────────────────────────────
+// GET /familia/:paciente_id — busca vínculos familiares
+app.get('/familia/:paciente_id', async (req, res) => {
+  const token = req.headers['x-admin-token'];
+  if (token !== ADMIN_TOKEN) return res.status(401).json({ erro: 'Não autorizado' });
+  try {
+    const data = await supaFetch(`farmabot_familia?or=(paciente_id.eq.${req.params.paciente_id},familiar_id.eq.${req.params.paciente_id})&select=*`);
+    res.json({ ok: true, vinculos: data || [] });
+  } catch(e) { res.status(500).json({ erro: e.message }); }
+});
+
+// POST /familia — cadastra vínculo familiar
+app.post('/familia', async (req, res) => {
+  const token = req.headers['x-admin-token'];
+  if (token !== ADMIN_TOKEN) return res.status(401).json({ erro: 'Não autorizado' });
+  const { paciente_id, familiar_id, relacao } = req.body;
+  if (!paciente_id || !familiar_id) return res.status(400).json({ erro: 'paciente_id e familiar_id são obrigatórios' });
+  try {
+    const data = await supaFetch('farmabot_familia', {
+      method: 'POST',
+      headers: { "Prefer": "resolution=ignore-duplicates" },
+      body: JSON.stringify({ paciente_id, familiar_id, relacao: relacao || 'familiar' })
+    });
+    res.json({ ok: true, data });
+  } catch(e) { res.status(500).json({ erro: e.message }); }
+});
+
+// DELETE /familia/:id — remove vínculo
+app.delete('/familia/:id', async (req, res) => {
+  const token = req.headers['x-admin-token'];
+  if (token !== ADMIN_TOKEN) return res.status(401).json({ erro: 'Não autorizado' });
+  try {
+    await supaFetch(`farmabot_familia?id=eq.${req.params.id}`, { method: 'DELETE' });
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ erro: e.message }); }
+});
+
+
   console.log(`✅ FarmaBot SUS v4.0.0 rodando na porta ${PORT}`);
   console.log(`📱 Número central: 62 9410-3358 (${META_PHONE_NUMBER_ID})`);
   console.log(`🔗 Webhook: /webhook`);
