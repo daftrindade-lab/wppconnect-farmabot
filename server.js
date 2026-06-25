@@ -599,10 +599,18 @@ app.post('/orientacoes', async (req, res) => {
   const token = req.headers['x-admin-token'];
   if (token !== ADMIN_TOKEN) return res.status(401).json({ erro: 'Não autorizado' });
 
-  const { paciente_id, telefone, nome_paciente, medicamentos, condicoes } = req.body;
-  if (!telefone || !medicamentos?.length) return res.status(400).json({ erro: 'telefone e medicamentos são obrigatórios' });
+  const { paciente_id, telefone, nome_paciente, medicamentos, condicoes, mensagem_customizada } = req.body;
+  if (!telefone) return res.status(400).json({ erro: 'telefone é obrigatório' });
 
   try {
+    // Se farmacêutico editou e aprovou a mensagem, usa ela diretamente
+    if (mensagem_customizada) {
+      await enviar(telefone, mensagem_customizada);
+      console.log(`📤 Orientações (customizadas) enviadas para ${telefone}`);
+      return res.json({ ok: true });
+    }
+
+    if (!medicamentos?.length) return res.status(400).json({ erro: 'medicamentos são obrigatórios' });
     const primeiroNome = (nome_paciente || '').split(' ')[0];
 
     // 1. Monta orientações fixas para cada medicamento
