@@ -1175,7 +1175,7 @@ app.delete('/familia/:id', async (req, res) => {
   } catch(e) { res.status(500).json({ erro: e.message }); }
 });
 
-
+app.listen(PORT, () => {
   console.log(`✅ FarmaBot SUS v4.0.0 rodando na porta ${PORT}`);
   console.log(`📱 Número central: 62 9410-3358 (${META_PHONE_NUMBER_ID})`);
   console.log(`🔗 Webhook: /webhook`);
