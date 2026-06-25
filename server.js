@@ -549,7 +549,111 @@ async function processarMensagem(numero, texto, t, paciente) {
   }
 }
 
-// ── Webhook Meta ──────────────────────────────────────────────────────────────
+// ── Base de orientações fixas por medicamento ─────────────────────────────────
+const ORIENTACOES_BASE = {
+  'METFORMINA': ['Tome sempre junto com as refeições para evitar enjoo e dor de barriga.','Nunca pare de tomar sem orientação médica, mesmo se a glicemia melhorar.','Beba bastante água durante o dia.'],
+  'GLIBENCLAMIDA': ['Tome 30 minutos antes do café da manhã.','Nunca pule refeições enquanto estiver usando esse remédio — pode causar fraqueza e tontura (hipoglicemia).','Se sentir tremores, suor frio ou tontura, coma algo doce imediatamente.'],
+  'GLICLAZIDA': ['Tome junto com o café da manhã.','Mantenha horário fixo todos os dias.','Monitore a glicemia regularmente.'],
+  'INSULINA': ['Aplique sempre no mesmo horário.','Guarde na geladeira (não no freezer). Fora da geladeira dura até 30 dias.','Alterne os locais de aplicação para evitar caroços na pele.','Nunca aplique insulina gelada — tire da geladeira 30 minutos antes.'],
+  'CAPTOPRIL': ['Tome em jejum, 1 hora antes das refeições.','Pode causar tosse seca — se incomodar muito, avise o médico.','Levante-se devagar da cama para evitar tontura.'],
+  'ENALAPRIL': ['Tome sempre no mesmo horário, com ou sem alimentos.','Pode causar tosse seca. Avise o médico se aparecer.','Evite sal em excesso na alimentação.'],
+  'LOSARTANA': ['Pode ser tomada com ou sem alimentos.','Não use substitutos de sal (cloreto de potássio) sem autorização médica.','Levante-se devagar para evitar tontura.'],
+  'ANLODIPINO': ['Pode ser tomado com ou sem alimentos.','Não tome suco de toranja (grapefruit) — interfere no medicamento.','Se sentir inchaço nos pés, avise o médico.'],
+  'ATENOLOL': ['Tome sempre no mesmo horário.','Nunca pare de tomar de repente — pode ser perigoso para o coração.','Pode causar cansaço e pés frios no início.'],
+  'CARVEDILOL': ['Tome junto com as refeições para melhor absorção.','Nunca interrompa sem orientação médica.','Meça a pressão e o pulso regularmente.'],
+  'HIDROCLOROTIAZIDA': ['Tome pela manhã para não atrapalhar o sono.','Aumente o consumo de alimentos ricos em potássio (banana, laranja, feijão).','Beba bastante água durante o dia.'],
+  'FUROSEMIDA': ['Tome pela manhã — causa aumento de urina.','Não tome à noite para não atrapalhar o sono.','Repor potássio com alimentação (banana, laranja, abacate).'],
+  'ESPIRONOLACTONA': ['Tome junto com as refeições.','Evite alimentos muito ricos em potássio em excesso.','Pode causar tontura nas primeiras semanas.'],
+  'SINVASTATINA': ['Tome à noite, antes de dormir — o efeito é melhor.','Não tome suco de toranja (grapefruit).','Se sentir dor muscular forte, avise o médico imediatamente.'],
+  'ROSUVASTATINA': ['Pode ser tomada a qualquer hora do dia.','Não tome antiácidos 2 horas após tomar esse remédio.','Se sentir dor muscular forte, avise o médico.'],
+  'OMEPRAZOL': ['Tome em jejum, 30 a 60 minutos antes do café da manhã.','Engolha inteiro — não mastigue nem abra a cápsula.','Use pelo tempo indicado pelo médico.'],
+  'LEVOTIROXINA': ['Tome em jejum, 30 a 60 minutos antes do café da manhã.','Não tome junto com leite, cálcio ou ferro — atrapalha a absorção.','Mantenha horário fixo todos os dias.'],
+  'PREDNISONA': ['Tome sempre junto com o café da manhã para proteger o estômago.','Nunca pare de tomar de repente — reduza a dose gradualmente com orientação médica.','Evite pessoas doentes — esse remédio reduz as defesas do organismo.'],
+  'DIPIRONA': ['Pode ser tomada com ou sem alimentos.','Use apenas quando necessário para dor ou febre.','Respeite o intervalo mínimo de 6 horas entre as doses.'],
+  'AMIODARONA': ['Tome junto com as refeições.','Evite exposição prolongada ao sol — use protetor solar.','Faça os exames de sangue (tireoide, fígado) regularmente conforme orientação médica.','Avise todos os médicos que trata que está usando esse remédio.'],
+  'DIGOXINA': ['Tome sempre no mesmo horário, com ou sem alimentos.','Nunca tome dose dupla se esquecer uma dose.','Avise o médico se sentir náusea, visão amarelada ou batimentos irregulares.'],
+  'CLOPIDOGREL': ['Tome com ou sem alimentos.','Avise o dentista e todos os médicos que você toma esse remédio antes de qualquer procedimento.','Se tiver corte que não para de sangrar, procure atendimento médico.'],
+  'VARFARINA': ['Tome sempre no mesmo horário.','Mantenha alimentação regular — variações no consumo de verduras escuras (couve, espinafre) alteram o efeito.','Faça o exame de coagulação (INR) regularmente.','Avise todos os profissionais de saúde que usa esse remédio.'],
+  'CLONAZEPAM': ['Tome no horário indicado — não aumente a dose por conta própria.','Não beba álcool enquanto estiver usando.','Não dirija ou opere máquinas — pode causar sonolência.','Não pare de tomar de repente — reduzir gradualmente com orientação médica.'],
+  'DIAZEPAM': ['Não beba álcool.','Pode causar dependência — use apenas pelo tempo prescrito.','Não dirija enquanto estiver usando.'],
+  'HALOPERIDOL': ['Tome no horário indicado.','Levante-se devagar para evitar tontura.','Pode causar rigidez muscular — avise o médico se ocorrer.'],
+  'FLUOXETINA': ['Pode ser tomada com ou sem alimentos.','O efeito completo leva 2 a 4 semanas — não desista nas primeiras semanas.','Não pare de tomar de repente.'],
+  'AMITRIPTILINA': ['Tome à noite — causa sonolência.','Não beba álcool.','Levante-se devagar da cama.'],
+  'DOMPERIDONA': ['Tome 15 a 30 minutos antes das refeições.','Não use por mais de 7 dias sem orientação médica.'],
+  'METOCLOPRAMIDA': ['Tome 30 minutos antes das refeições.','Use apenas pelo tempo prescrito — não use por mais de 5 dias.'],
+  'FENOBARBITAL': ['Tome sempre no mesmo horário.','Nunca pare de tomar sem orientação — pode causar convulsões.','Não beba álcool.'],
+  'CARBAMAZEPINA': ['Tome junto com as refeições.','Faça exames de sangue regularmente.','Pode reduzir o efeito de anticoncepcionais.'],
+};
+
+function buscarOrientacoesFixas(nomeMedicamento) {
+  const nome = nomeMedicamento.toUpperCase();
+  for (const [chave, orientacoes] of Object.entries(ORIENTACOES_BASE)) {
+    if (nome.includes(chave)) return orientacoes;
+  }
+  return [];
+}
+
+// ── Endpoint: enviar orientações farmacêuticas ────────────────────────────────
+// Body: { paciente_id, telefone, nome_paciente, medicamentos: [{nome, dose, horarios}], condicoes }
+app.post('/orientacoes', async (req, res) => {
+  const token = req.headers['x-admin-token'];
+  if (token !== ADMIN_TOKEN) return res.status(401).json({ erro: 'Não autorizado' });
+
+  const { paciente_id, telefone, nome_paciente, medicamentos, condicoes } = req.body;
+  if (!telefone || !medicamentos?.length) return res.status(400).json({ erro: 'telefone e medicamentos são obrigatórios' });
+
+  try {
+    const primeiroNome = (nome_paciente || '').split(' ')[0];
+
+    // 1. Monta orientações fixas para cada medicamento
+    let blocoOrientacoes = '';
+    for (const med of medicamentos) {
+      const fixas = buscarOrientacoesFixas(med.nome);
+      if (fixas.length) {
+        blocoOrientacoes += `\n💊 *${med.nome}* (${med.dose||''})\n`;
+        fixas.forEach(o => { blocoOrientacoes += `• ${o}\n`; });
+      }
+    }
+
+    // 2. Complementa com IA (Groq) se houver condições do paciente
+    let complementoIA = '';
+    if (process.env.GROQ_KEY && condicoes?.length) {
+      try {
+        const prompt = `Gere orientações farmacêuticas CURTAS e SIMPLES (máx 3 por medicamento) para um paciente com ${condicoes.join(', ')}, usando os medicamentos: ${medicamentos.map(m=>m.nome).join(', ')}. Foco em interações com alimentação, horários e sinais de alerta. Linguagem simples para idosos de baixa escolaridade. Máx 150 palavras no total.`;
+        const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.GROQ_KEY}` },
+          body: JSON.stringify({
+            model: 'llama-3.3-70b-versatile',
+            messages: [{ role: 'user', content: prompt }],
+            max_tokens: 300, temperature: 0.3
+          })
+        });
+        const d = await r.json();
+        const texto = d.choices?.[0]?.message?.content;
+        if (texto) complementoIA = `\n\n🤖 *Orientação personalizada:*\n${texto}`;
+      } catch(e) { console.error('IA orientações:', e.message); }
+    }
+
+    // 3. Monta mensagem final
+    const horariosMeds = medicamentos.map(m => `• ${m.nome}: ${(m.horarios||[]).join(', ')}`).join('\n');
+    const msg =
+      `👋 Olá, *${primeiroNome}*! Aqui estão as orientações sobre seus medicamentos:\n` +
+      `\n⏰ *Horários de hoje:*\n${horariosMeds}` +
+      (blocoOrientacoes ? `\n\n📋 *Orientações importantes:*${blocoOrientacoes}` : '') +
+      (complementoIA || '') +
+      `\n\n❓ Qualquer dúvida, pode responder aqui. Sua saúde é nossa prioridade! 💚`;
+
+    await enviar(telefone, msg);
+    console.log(`📤 Orientações enviadas para ${nome_paciente}`);
+    res.json({ ok: true, mensagem: 'Orientações enviadas com sucesso' });
+  } catch (e) {
+    console.error('Erro /orientacoes:', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
+
+
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
