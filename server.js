@@ -194,7 +194,14 @@ async function adicionarMsgPendencia(conversaId, texto, tipo) {
 // ── Enviar mensagem via Meta Cloud API ────────────────────────────────────────
 async function enviar(numero, texto) {
   try {
-    const num11 = numero.replace(/\D/g, '').slice(-11);
+    // Remove tudo que não é dígito
+    const digits = numero.replace(/\D/g, '');
+    // Remove código do país 55 se presente
+    const semPais = digits.startsWith('55') ? digits.slice(2) : digits;
+    // Usa o número como veio — sem forçar 11 dígitos
+    // Isso preserva números sem o 9 (8 dígitos locais) que o WhatsApp já aceita
+    const numFinal = `55${semPais}`;
+
     const res = await fetch(
       `https://graph.facebook.com/${META_API_VERSION}/${META_PHONE_NUMBER_ID}/messages`,
       {
@@ -205,7 +212,7 @@ async function enviar(numero, texto) {
         },
         body: JSON.stringify({
           messaging_product: 'whatsapp',
-          to: `55${num11}`,
+          to: numFinal,
           type: 'text',
           text: { body: texto }
         })
@@ -215,7 +222,7 @@ async function enviar(numero, texto) {
     if (data.error) {
       console.error('❌ Erro Meta:', JSON.stringify(data.error));
     } else {
-      console.log(`✅ Mensagem enviada para ${num11}`);
+      console.log(`✅ Mensagem enviada para ${numFinal}`);
     }
     return data;
   } catch (e) {
