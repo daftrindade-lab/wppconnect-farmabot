@@ -666,7 +666,11 @@ async function processarMensagem(numero, texto, t, paciente) {
   }
 
   // 3. Dúvida de estoque → farmacêutico
-  if (GATILHOS_ESTOQUE.some(g => t.includes(g))) {
+  const matchEstoque = GATILHOS_ESTOQUE.find(g => t.includes(g));
+  // Detecta também perguntas com "tem + nome" genérico
+  const perguntaEstoque = matchEstoque || (t.startsWith('tem ') && t.length > 6) || t.includes('tem esse') || t.includes('disponivel') || t.includes('disponível');
+  console.log(`🔍 Texto: "${t}" | Match estoque: ${perguntaEstoque ? 'sim' : 'não'}`);
+  if (perguntaEstoque) {
     const farmaceutico = await buscarFarmaceuticoDaUbs(paciente.ubs_nome);
     await salvarPendencia(paciente.nome, numero, texto, paciente.ubs_nome, farmaceutico?.id || null);
     await enviar(numero,
