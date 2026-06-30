@@ -145,31 +145,44 @@ async function buscarFarmaceuticoDaUbs(ubsNome) {
   } catch (e) { return null; }
 }
 
+// ── Normalizar número ─────────────────────────────────────────────────────────
+function normalizarNumero(numero) {
+  // Remove tudo que não é dígito
+  const digits = numero.replace(/\D/g, '');
+  // Remove código do país 55 se presente, retorna número local
+  return digits.startsWith('55') ? digits.slice(2) : digits;
+}
+
 // ── Pendências ────────────────────────────────────────────────────────────────
 async function buscarPendenciaAberta(numero) {
   try {
-    const num11 = numero.replace(/\D/g, '').slice(-11);
-    const res = await supaFetch(`farmabot_conversas?numero=eq.${num11}&pendente=eq.true&order=hora.desc&limit=1`);
-    return Array.isArray(res) ? res[0] || null : null;
+    const num = normalizarNumero(numero);
+    // Busca por número exato OU com variações (com/sem 9)
+    const res = await supaFetch(`farmabot_conversas?numero=eq.${num}&pendente=eq.true&order=hora.desc&limit=1`);
+    if (Array.isArray(res) && res[0]) return res[0];
+    // Tenta variação com/sem 9
+    const numAlt = num.length === 11 ? num.slice(0,2) + num.slice(3) : num.slice(0,2) + '9' + num.slice(2);
+    const res2 = await supaFetch(`farmabot_conversas?numero=eq.${numAlt}&pendente=eq.true&order=hora.desc&limit=1`);
+    return Array.isArray(res2) ? res2[0] || null : null;
   } catch { return null; }
 }
 
 async function salvarPendencia(pacienteNome, numero, mensagem, ubsNome, farmaceuticoId) {
   try {
-    const num11 = numero.replace(/\D/g, '').slice(-11);
+    const num = normalizarNumero(numero);
     const hora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
     await supaFetch(`farmabot_conversas`, {
       method: 'POST',
       headers: { "Prefer": "resolution=merge-duplicates" },
       body: JSON.stringify({
         id: `wa_${Date.now()}`,
-        paciente: pacienteNome || num11,
-        numero: num11,
+        paciente: pacienteNome || num,
+        numero: num,
         unidade: ubsNome || null,
         farmaceutico_id: farmaceuticoId || null,
         msgs: [
           { tipo: 'paciente', texto: mensagem, hora },
-          { tipo: 'bot', texto: '⏳ Mensagem encaminhada ao farmacêutico da sua unidade.', hora }
+          { tipo: 'bot', texto: 'Mensagem encaminhada ao farmacêutico da sua unidade. ⏳', hora }
         ],
         pendente: true,
         hora
