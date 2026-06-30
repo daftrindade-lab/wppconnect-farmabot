@@ -167,8 +167,14 @@ async function buscarPendenciaAberta(numero) {
     const res3 = await supaFetch(`farmabot_conversas?numero=eq.${num}&criado_em=gte.${ontemISO}&order=criado_em.desc&limit=1`);
     if (Array.isArray(res3) && res3[0]) {
       // Reabre a conversa
-      await supaFetch(`farmabot_conversas?id=eq.${res3[0].id}`, {
+      await fetch(`${SUPA_URL}/rest/v1/farmabot_conversas?id=eq.${res3[0].id}`, {
         method: 'PATCH',
+        headers: {
+          'apikey': SUPA_KEY,
+          'Authorization': `Bearer ${SUPA_KEY}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'return=minimal'
+        },
         body: JSON.stringify({ pendente: true })
       });
       return res3[0];
@@ -206,13 +212,20 @@ async function salvarPendencia(pacienteNome, numero, mensagem, ubsNome, farmaceu
 async function adicionarMsgPendencia(conversaId, texto, tipo) {
   try {
     const conv = await supaFetch(`farmabot_conversas?id=eq.${conversaId}&select=msgs`);
-    const msgs = conv[0]?.msgs || [];
+    const msgs = Array.isArray(conv) && conv[0] ? conv[0].msgs || [] : [];
     const hora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
     msgs.push({ tipo, texto, hora });
-    await supaFetch(`farmabot_conversas?id=eq.${conversaId}`, {
+    const res = await fetch(`${SUPA_URL}/rest/v1/farmabot_conversas?id=eq.${conversaId}`, {
       method: 'PATCH',
-      body: JSON.stringify({ msgs })
+      headers: {
+        'apikey': SUPA_KEY,
+        'Authorization': `Bearer ${SUPA_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal'
+      },
+      body: JSON.stringify({ msgs, pendente: true })
     });
+    if (!res.ok) console.error('Erro PATCH conversa:', res.status);
   } catch (e) { console.error('Erro adicionarMsg:', e.message); }
 }
 
