@@ -169,9 +169,10 @@ async function salvarPendencia(pacienteNome, numero, mensagem, ubsNome, farmaceu
   try {
     const num = normalizarNumero(numero);
     const hora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-    await supaFetch(`farmabot_conversas`, {
+    console.log(`💾 Salvando pendência: ${pacienteNome} | ${num} | ${ubsNome}`);
+    const resultado = await supaFetch(`farmabot_conversas`, {
       method: 'POST',
-      headers: { "Prefer": "resolution=merge-duplicates" },
+      headers: { "Prefer": "return=representation" },
       body: JSON.stringify({
         id: `wa_${Date.now()}`,
         paciente: pacienteNome || num,
@@ -186,7 +187,8 @@ async function salvarPendencia(pacienteNome, numero, mensagem, ubsNome, farmaceu
         hora
       })
     });
-  } catch (e) { console.error('Erro salvarPendencia:', e.message); }
+    console.log(`💾 Resultado salvarPendencia:`, JSON.stringify(resultado).substring(0, 200));
+  } catch (e) { console.error('❌ Erro salvarPendencia:', e.message); }
 }
 
 async function adicionarMsgPendencia(conversaId, texto, tipo) {
