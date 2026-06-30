@@ -87,14 +87,15 @@ REGRAS: Linguagem simples e acolhedora. Máx 3 parágrafos curtos. Nunca altere 
 
 // ── Helpers Supabase ──────────────────────────────────────────────────────────
 async function supaFetch(path, opts = {}) {
+  const { headers: optsHeaders, ...restOpts } = opts;
   const res = await fetch(`${SUPA_URL}/rest/v1/${path}`, {
+    ...restOpts,
     headers: {
       "apikey": SUPA_KEY,
       "Authorization": `Bearer ${SUPA_KEY}`,
       "Content-Type": "application/json",
-      ...opts.headers
-    },
-    ...opts
+      ...optsHeaders
+    }
   });
   return res.json();
 }
