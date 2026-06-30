@@ -155,13 +155,25 @@ function normalizarNumero(numero) {
 async function buscarPendenciaAberta(numero) {
   try {
     const num = normalizarNumero(numero);
-    // Busca conversa PENDENTE (não resolvida) pelo número exato
+    // Busca conversa PENDENTE pelo número exato
     const res = await supaFetch(`farmabot_conversas?numero=eq.${num}&pendente=eq.true&order=criado_em.desc&limit=1`);
     if (Array.isArray(res) && res[0]) return res[0];
     // Tenta variação com/sem 9
     const numAlt = num.length === 11 ? num.slice(0,2) + num.slice(3) : num.slice(0,2) + '9' + num.slice(2);
     const res2 = await supaFetch(`farmabot_conversas?numero=eq.${numAlt}&pendente=eq.true&order=criado_em.desc&limit=1`);
-    return Array.isArray(res2) ? res2[0] || null : null;
+    if (Array.isArray(res2) && res2[0]) return res2[0];
+    // Busca conversa das últimas 24h (mesmo resolvida) para continuar o diálogo
+    const ontemISO = new Date(Date.now() - 24*60*60*1000).toISOString();
+    const res3 = await supaFetch(`farmabot_conversas?numero=eq.${num}&criado_em=gte.${ontemISO}&order=criado_em.desc&limit=1`);
+    if (Array.isArray(res3) && res3[0]) {
+      // Reabre a conversa
+      await supaFetch(`farmabot_conversas?id=eq.${res3[0].id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ pendente: true })
+      });
+      return res3[0];
+    }
+    return null;
   } catch { return null; }
 }
 
@@ -899,16 +911,8 @@ app.post('/responder', async (req, res) => {
     // Salva a resposta no histórico da conversa
     await adicionarMsgPendencia(conversa_id, textoAssinado, 'farmaceutico');
 
-    // Marca conversa como resolvida
-    await supaFetch(`farmabot_conversas?id=eq.${conversa_id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ pendente: false })
-    });
-
-    // Recarrega cache de pacientes (caso tenha sido atualizado)
-    await carregarPacientesCache();
-
-    res.json({ ok: true, mensagem: 'Resposta enviada e conversa resolvida' });
+    // Não marca como resolvida automaticamente — farmacêutico decide quando resolver
+    res.json({ ok: true, mensagem: 'Resposta enviada' });
   } catch (e) {
     console.error('Erro /responder:', e.message);
     res.status(500).json({ erro: e.message });
