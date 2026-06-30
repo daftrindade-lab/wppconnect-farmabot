@@ -147,9 +147,7 @@ async function buscarFarmaceuticoDaUbs(ubsNome) {
 
 // ── Normalizar número ─────────────────────────────────────────────────────────
 function normalizarNumero(numero) {
-  // Remove tudo que não é dígito
   const digits = numero.replace(/\D/g, '');
-  // Remove código do país 55 se presente, retorna número local
   return digits.startsWith('55') ? digits.slice(2) : digits;
 }
 
@@ -157,12 +155,12 @@ function normalizarNumero(numero) {
 async function buscarPendenciaAberta(numero) {
   try {
     const num = normalizarNumero(numero);
-    // Busca por número exato OU com variações (com/sem 9)
-    const res = await supaFetch(`farmabot_conversas?numero=eq.${num}&pendente=eq.true&order=hora.desc&limit=1`);
+    // Busca conversa PENDENTE (não resolvida) pelo número exato
+    const res = await supaFetch(`farmabot_conversas?numero=eq.${num}&pendente=eq.true&order=criado_em.desc&limit=1`);
     if (Array.isArray(res) && res[0]) return res[0];
     // Tenta variação com/sem 9
     const numAlt = num.length === 11 ? num.slice(0,2) + num.slice(3) : num.slice(0,2) + '9' + num.slice(2);
-    const res2 = await supaFetch(`farmabot_conversas?numero=eq.${numAlt}&pendente=eq.true&order=hora.desc&limit=1`);
+    const res2 = await supaFetch(`farmabot_conversas?numero=eq.${numAlt}&pendente=eq.true&order=criado_em.desc&limit=1`);
     return Array.isArray(res2) ? res2[0] || null : null;
   } catch { return null; }
 }
