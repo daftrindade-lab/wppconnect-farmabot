@@ -673,6 +673,13 @@ async function processarMensagem(numero, texto, t, paciente) {
   }
   const pendenciaAberta = await buscarPendenciaAberta(numero);
   const ehSaudacao = ['oi','olá','ola','bom dia','boa tarde','boa noite','hello','hey'].some(g => t.trim() === g || t.trim().startsWith(g + ' ') || t.trim().endsWith(' ' + g));
+  const ehAgradecimento = ['obrigado','obrigada','obg','vlw','valeu','muito obrigado','muito obrigada','brigado','brigada'].some(g => t.trim() === g || t.trim().startsWith(g + ' ') || t.trim().endsWith(' ' + g));
+
+  // Agradecimentos respondem com mensagem fixa, sem abrir/anexar pendência
+  if (ehAgradecimento) {
+    await enviar(numero, '😊 Fico feliz em ajudar! Cuidar da sua saúde é nossa missão. Qualquer dúvida, estou aqui!');
+    return;
+  }
 
   if (pendenciaAberta && !ehSaudacao) {
     // Mensagem de conteúdo — adiciona à conversa pendente
@@ -963,6 +970,16 @@ app.post('/responder', async (req, res) => {
           })
         });
       }
+
+      // Marca a queixa original como respondida para não continuar
+      // aparecendo como card "pendente" separado na lista de Conversas
+      try {
+        const queixaIdRaw2 = conversa_id.replace('queixa_', '');
+        await supaFetch(`farmabot_queixas?id=eq.${queixaIdRaw2}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ status: 'respondida' })
+        });
+      } catch (e) { console.error('Erro ao atualizar status da queixa:', e.message); }
     }
 
     // Não marca como resolvida automaticamente — farmacêutico decide quando resolver
