@@ -1039,6 +1039,20 @@ app.post('/admin/ubs', async (req, res) => {
   } catch (e) { res.status(500).json({ erro: e.message }); }
 });
 
+// Exclui (inativa) uma UBS — soft delete, não remove o histórico associado
+app.delete('/admin/ubs', async (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  const { nome_ubs } = req.query;
+  if (!nome_ubs) return res.status(400).json({ erro: 'nome_ubs é obrigatório' });
+  try {
+    await supaFetch(`farmabot_ubs?nome_ubs=eq.${encodeURIComponent(nome_ubs)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'inativo' })
+    });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
 app.post('/admin/recarregar', async (req, res) => {
   if (!checkAdmin(req, res)) return;
   await carregarPacientesCache();
