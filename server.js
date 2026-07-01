@@ -620,9 +620,14 @@ async function processarFluxoQueixa(numero, texto, t, paciente) {
 
     // Salva a queixa
     try {
-      await supaFetch('farmabot_queixas', {
+      const res = await fetch(`${SUPA_URL}/rest/v1/farmabot_queixas`, {
         method: 'POST',
-        headers: { "Prefer": "resolution=ignore-duplicates" },
+        headers: {
+          'apikey': SUPA_KEY,
+          'Authorization': `Bearer ${SUPA_KEY}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'return=minimal'
+        },
         body: JSON.stringify({
           paciente_id: paciente?.id || null,
           paciente_nome: paciente?.nome || numero,
@@ -635,6 +640,8 @@ async function processarFluxoQueixa(numero, texto, t, paciente) {
           data_registro: new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' })
         })
       });
+      if (!res.ok) console.error('Erro salvar queixa:', res.status);
+      else console.log(`⚠️ Queixa registrada: ${paciente?.nome || numero} | ${gravidade}`);
     } catch(e) { console.error('Erro salvar queixa:', e.message); }
 
     if (gravidade === 'grave') {
