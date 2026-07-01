@@ -186,7 +186,7 @@ async function buscarPendenciaAberta(numero) {
 async function salvarPendencia(pacienteNome, numero, mensagem, ubsNome, farmaceuticoId) {
   try {
     const num = normalizarNumero(numero);
-    const hora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const hora = new Date().toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
     console.log(`💾 Salvando pendência: ${pacienteNome} | ${num} | ${ubsNome}`);
     const resultado = await supaFetch(`farmabot_conversas`, {
       method: 'POST',
@@ -213,7 +213,7 @@ async function adicionarMsgPendencia(conversaId, texto, tipo) {
   try {
     const conv = await supaFetch(`farmabot_conversas?id=eq.${conversaId}&select=msgs`);
     const msgs = Array.isArray(conv) && conv[0] ? conv[0].msgs || [] : [];
-    const hora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const hora = new Date().toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
     msgs.push({ tipo, texto, hora });
     const res = await fetch(`${SUPA_URL}/rest/v1/farmabot_conversas?id=eq.${conversaId}`, {
       method: 'PATCH',
@@ -927,8 +927,10 @@ app.post('/responder', async (req, res) => {
       return res.status(500).json({ erro: 'Falha ao enviar mensagem WhatsApp', detalhe: resultadoEnvio.error });
     }
 
-    // Salva a resposta no histórico da conversa
-    await adicionarMsgPendencia(conversa_id, textoAssinado, 'farmaceutico');
+    // Salva a resposta no histórico da conversa (ignora se for queixa avulsa)
+    if (!conversa_id.startsWith('queixa_')) {
+      await adicionarMsgPendencia(conversa_id, textoAssinado, 'farmaceutico');
+    }
 
     // Não marca como resolvida automaticamente — farmacêutico decide quando resolver
     res.json({ ok: true, mensagem: 'Resposta enviada' });
