@@ -928,61 +928,19 @@ app.post('/responder', async (req, res) => {
       return res.status(500).json({ erro: 'Falha ao enviar mensagem WhatsApp', detalhe: resultadoEnvio.error });
     }
 
-    // Salva a resposta no histórico da conversa
-    if (!conversa_id.startsWith('queixa_')) {
+    // Salva a resposta no histórico da conversa.
+    // Atenção: conversas vinculadas a queixas usam o id "queixa_conv_<id>" (criado
+    // pelo próprio painel), que também começa com "queixa_" — por isso não basta
+    // checar o prefixo "queixa_"; é preciso tratar "queixa_conv_" como conversa real.
+    const ehConversaReal = !conversa_id.startsWith('queixa_') || conversa_id.startsWith('queixa_conv_');
+
+    if (ehConversaReal) {
       await adicionarMsgPendencia(conversa_id, textoAssinado, 'farmaceutico');
-    } else {
-      // Resposta a uma queixa avulsa (sem conversa vinculada ainda).
-      // Se já existir uma pendência aberta para esse número, anexa nela.
-      // Caso contrário, cria a conversa vinculada agora, trazendo a queixa original,
-      // para que a próxima resposta do paciente seja reconhecida como continuação.
-      const pendenciaExistente = await buscarPendenciaAberta(numero_paciente);
-      if (pendenciaExistente) {
-        await adicionarMsgPendencia(pendenciaExistente.id, textoAssinado, 'farmaceutico');
-      } else {
-        const queixaIdRaw = conversa_id.replace('queixa_', '');
-        let descricaoQueixa = mensagem;
-        let nomePaciente = numero_paciente;
-        try {
-          const queixaRes = await supaFetch(`farmabot_queixas?id=eq.${queixaIdRaw}&select=paciente_nome,descricao,ubs_nome`);
-          if (Array.isArray(queixaRes) && queixaRes[0]) {
-            descricaoQueixa = `⚠️ Queixa: ${queixaRes[0].descricao || ''}`;
-            nomePaciente = queixaRes[0].paciente_nome || numero_paciente;
-          }
-        } catch (e) { console.error('Erro ao buscar queixa original:', e.message); }
-
-        const num = normalizarNumero(numero_paciente);
-        const hora = new Date().toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
-        await supaFetch(`farmabot_conversas`, {
-          method: 'POST',
-          headers: { "Prefer": "return=representation" },
-          body: JSON.stringify({
-            id: `wa_${Date.now()}`,
-            paciente: nomePaciente,
-            numero: num,
-            unidade: nome_ubs || null,
-            msgs: [
-              { tipo: 'paciente', texto: descricaoQueixa, hora },
-              { tipo: 'farmaceutico', texto: textoAssinado, hora }
-            ],
-            pendente: true,
-            hora
-          })
-        });
-      }
-
-      // Marca a queixa original como respondida para não continuar
-      // aparecendo como card "pendente" separado na lista de Conversas
-      try {
-        const queixaIdRaw2 = conversa_id.replace('queixa_', '');
-        await supaFetch(`farmabot_queixas?id=eq.${queixaIdRaw2}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ status: 'respondida' })
-        });
-      } catch (e) { console.error('Erro ao atualizar status da queixa:', e.message); }
     }
+    // Se for uma referência crua "queixa_<id>" (primeira resposta, ainda sem conversa
+    // vinculada), não faz nada aqui — o painel cria a conversa e marca a queixa como
+    // resolvida logo em seguida, após receber { ok: true } desta rota.
 
-    // Não marca como resolvida automaticamente — farmacêutico decide quando resolver
     res.json({ ok: true, mensagem: 'Resposta enviada' });
   } catch (e) {
     console.error('Erro /responder:', e.message);
