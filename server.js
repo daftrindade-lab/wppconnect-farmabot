@@ -921,9 +921,48 @@ app.post('/responder', async (req, res) => {
       return res.status(500).json({ erro: 'Falha ao enviar mensagem WhatsApp', detalhe: resultadoEnvio.error });
     }
 
-    // Salva a resposta no histórico da conversa (ignora se for queixa avulsa)
+    // Salva a resposta no histórico da conversa
     if (!conversa_id.startsWith('queixa_')) {
       await adicionarMsgPendencia(conversa_id, textoAssinado, 'farmaceutico');
+    } else {
+      // Resposta a uma queixa avulsa (sem conversa vinculada ainda).
+      // Se já existir uma pendência aberta para esse número, anexa nela.
+      // Caso contrário, cria a conversa vinculada agora, trazendo a queixa original,
+      // para que a próxima resposta do paciente seja reconhecida como continuação.
+      const pendenciaExistente = await buscarPendenciaAberta(numero_paciente);
+      if (pendenciaExistente) {
+        await adicionarMsgPendencia(pendenciaExistente.id, textoAssinado, 'farmaceutico');
+      } else {
+        const queixaIdRaw = conversa_id.replace('queixa_', '');
+        let descricaoQueixa = mensagem;
+        let nomePaciente = numero_paciente;
+        try {
+          const queixaRes = await supaFetch(`farmabot_queixas?id=eq.${queixaIdRaw}&select=paciente_nome,descricao,ubs_nome`);
+          if (Array.isArray(queixaRes) && queixaRes[0]) {
+            descricaoQueixa = `⚠️ Queixa: ${queixaRes[0].descricao || ''}`;
+            nomePaciente = queixaRes[0].paciente_nome || numero_paciente;
+          }
+        } catch (e) { console.error('Erro ao buscar queixa original:', e.message); }
+
+        const num = normalizarNumero(numero_paciente);
+        const hora = new Date().toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
+        await supaFetch(`farmabot_conversas`, {
+          method: 'POST',
+          headers: { "Prefer": "return=representation" },
+          body: JSON.stringify({
+            id: `wa_${Date.now()}`,
+            paciente: nomePaciente,
+            numero: num,
+            unidade: nome_ubs || null,
+            msgs: [
+              { tipo: 'paciente', texto: descricaoQueixa, hora },
+              { tipo: 'farmaceutico', texto: textoAssinado, hora }
+            ],
+            pendente: true,
+            hora
+          })
+        });
+      }
     }
 
     // Não marca como resolvida automaticamente — farmacêutico decide quando resolver
