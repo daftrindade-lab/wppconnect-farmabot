@@ -25,6 +25,7 @@ const fluxoIdentificacao = {};   // numero -> { etapa, dadosParciais }
 // ── Cache ─────────────────────────────────────────────────────────────────────
 let pacientesCache = [];
 let horariosPadraoCache = new Map();
+let faqCache = [];
 
 async function carregarPacientesCache() {
   try {
@@ -54,23 +55,39 @@ async function carregarHorariosPadraoCache() {
   } catch (e) { console.error('Erro cache horários:', e.message); }
 }
 
+async function carregarFaqCache() {
+  try {
+    const res = await fetch(`${SUPA_URL}/rest/v1/farmabot_faqs?select=id,gatilhos,resposta&ativo=eq.true`, {
+      headers: { "apikey": SUPA_KEY, "Authorization": `Bearer ${SUPA_KEY}` }
+    });
+    const data = await res.json();
+    if (Array.isArray(data)) {
+      faqCache = data;
+      console.log(`✅ Cache de FAQs: ${faqCache.length} pergunta(s)`);
+    }
+  } catch (e) { console.error('Erro cache FAQs:', e.message); }
+}
+
 carregarPacientesCache();
 carregarHorariosPadraoCache();
+carregarFaqCache();
 setInterval(carregarPacientesCache, 5 * 60 * 1000);
 setInterval(carregarHorariosPadraoCache, 5 * 60 * 1000);
+setInterval(carregarFaqCache, 5 * 60 * 1000);
 
 // ── FAQ ───────────────────────────────────────────────────────────────────────
-const FAQ = [
+// As FAQs agora vêm da tabela farmabot_faqs (gerenciável pelo painel do gestor).
+// O array abaixo só serve de referência para popular a tabela pela primeira vez
+// (veja instruções de SQL enviadas separadamente) — não é mais usado em runtime.
+const FAQ_SEED_REFERENCIA = [
   { gatilhos:["horário","horario","que horas","quando abr","funciona","abre"], resposta:"🕐 Nossa UBS funciona de segunda a sexta, das 7h às 17h. Para emergências, ligue para o SAMU: 192." },
   { gatilhos:["telefone","fone","contato","ligar"], resposta:"📞 Para falar com sua UBS, envie mensagem aqui mesmo ou compareça pessoalmente durante o horário de funcionamento (7h-17h, seg-sex)." },
   { gatilhos:["consulta","médico","medico","agendamento","agendar","marcar"], resposta:"📅 Para agendar consulta médica, compareça à recepção da UBS durante o horário de funcionamento (7h às 17h, seg a sex)." },
   { gatilhos:["endereço","endereco","onde fica","localização","localizacao"], resposta:"📍 Estamos em Trindade-GO. Para o endereço exato da sua UBS, verifique o cartão da unidade ou consulte a Prefeitura de Trindade." },
-  { gatilhos:["obrigad","brigad","valeu","muito bem","ótimo","otimo","perfeito"], resposta:"😊 Fico feliz em ajudar! Cuidar da sua saúde é nossa missão. Qualquer dúvida, estou aqui!" },
   { gatilhos:["esqueci","esqueceu","perdi a dose","perdi dose"], resposta:"💊 Se esqueceu uma dose, tome assim que lembrar — *a não ser que esteja próximo do horário da próxima dose*. Nesse caso, pule a dose esquecida e continue normalmente.\n\n⚠️ Nunca tome duas doses de uma vez. Em caso de dúvida, consulte o farmacêutico da sua UBS." },
   { gatilhos:["efeito","colateral","reação","enjoo","tontura","mal estar"], resposta:"Se estiver sentindo mal-estar com algum medicamento, *não pare de tomar por conta própria*. Procure a UBS para orientação. Para sintomas graves, ligue SAMU: 192." },
   { gatilhos:["pressão","hipertensão","hipertensao"], resposta:"💓 Para controlar a pressão arterial: tome os remédios nos horários certos, reduza o sal, evite estresse, caminhe pelo menos 30 min/dia e meça a pressão regularmente." },
   { gatilhos:["diabetes","glicose","açúcar no sangue","acucar"], resposta:"🩺 Para controlar o diabetes: tome os remédios certinho, controle a alimentação, evite açúcar e faça exercícios. Se sentir tontura ou fraqueza, pode ser hipoglicemia — coma algo doce e procure ajuda." },
-  { gatilhos:["oi","olá","ola","bom dia","boa tarde","boa noite","salve","ei ","hello","opa"], resposta:null }, // resposta dinâmica abaixo
 ];
 
 const GATILHOS_ESTOQUE = ['tem esse','tem o remédio','tem remedio','disponível','disponivel','acabou','faltou','buscar remédio','retirar','pegar remédio','estoque','medicamento disponível','tem metformina','tem losartana','tem insulina','tem dipirona','tem o medicamento','tem esse remédio','tem esse remedio','tem ','remédio disponível','remedio disponivel','buscar o remédio'];
@@ -716,7 +733,7 @@ async function processarMensagem(numero, texto, t, paciente) {
   }
 
   // 4. FAQ
-  const faqMatch = FAQ.find(f => f.gatilhos && f.resposta && f.gatilhos.some(g => t.includes(g)));
+  const faqMatch = faqCache.find(f => f.gatilhos && f.resposta && f.gatilhos.some(g => t.includes(g)));
   if (faqMatch) {
     await enviar(numero, faqMatch.resposta);
     return;
@@ -1053,11 +1070,59 @@ app.delete('/admin/ubs', async (req, res) => {
   } catch (e) { res.status(500).json({ erro: e.message }); }
 });
 
+// ── FAQs (gestor) ─────────────────────────────────────────────────────────────
+app.get('/admin/faqs', async (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  try {
+    const data = await supaFetch('farmabot_faqs?select=*&order=id.asc');
+    res.json({ ok: true, faqs: data || [] });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+app.post('/admin/faqs', async (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  const { gatilhos, resposta } = req.body;
+  if (!Array.isArray(gatilhos) || !gatilhos.length || !resposta) {
+    return res.status(400).json({ erro: 'gatilhos (lista) e resposta são obrigatórios' });
+  }
+  try {
+    const data = await supaFetch('farmabot_faqs', {
+      method: 'POST',
+      headers: { "Prefer": "return=representation" },
+      body: JSON.stringify({ gatilhos, resposta, ativo: true })
+    });
+    await carregarFaqCache();
+    res.json({ ok: true, data });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+app.patch('/admin/faqs/:id', async (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  try {
+    await supaFetch(`farmabot_faqs?id=eq.${req.params.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(req.body)
+    });
+    await carregarFaqCache();
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+app.delete('/admin/faqs/:id', async (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  try {
+    await supaFetch(`farmabot_faqs?id=eq.${req.params.id}`, { method: 'DELETE' });
+    await carregarFaqCache();
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
 app.post('/admin/recarregar', async (req, res) => {
   if (!checkAdmin(req, res)) return;
   await carregarPacientesCache();
   await carregarHorariosPadraoCache();
-  res.json({ ok: true, pacientes: pacientesCache.length, horarios: horariosPadraoCache.size });
+  await carregarFaqCache();
+  res.json({ ok: true, pacientes: pacientesCache.length, horarios: horariosPadraoCache.size, faqs: faqCache.length });
 });
 
 // ── Registro de queixas/reações adversas ─────────────────────────────────────
