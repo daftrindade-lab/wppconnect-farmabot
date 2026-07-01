@@ -678,17 +678,16 @@ async function processarMensagem(numero, texto, t, paciente) {
     return;
   }
   const pendenciaAberta = await buscarPendenciaAberta(numero);
-  if (pendenciaAberta) {
+  const ehSaudacao = ['oi','olá','ola','bom dia','boa tarde','boa noite','hello','hey'].some(g => t.trim() === g || t.trim().startsWith(g + ' ') || t.trim().endsWith(' ' + g));
+
+  if (pendenciaAberta && !ehSaudacao) {
+    // Mensagem de conteúdo — adiciona à conversa pendente
     await adicionarMsgPendencia(pendenciaAberta.id, texto, 'paciente');
-    const ehSaudacao = ['oi','olá','ola','bom dia','boa tarde','boa noite'].some(g => t.includes(g));
-    if (ehSaudacao) {
-      await enviar(numero, '⏳ Sua mensagem anterior já está com o farmacêutico da sua UBS.\n\nAssim que ele responder, você receberá uma mensagem aqui. Para urgências: SAMU 192.');
-    }
+    await enviar(numero, '⏳ Sua mensagem foi adicionada ao atendimento em aberto com o farmacêutico da *' + (paciente.ubs_nome||'sua UBS') + '*.\n\nAssim que ele responder, você receberá uma mensagem aqui. Para urgências: SAMU 192.');
     return;
   }
 
-  // 2. Saudação com paciente identificado
-  const ehSaudacao = ['oi','olá','ola','bom dia','boa tarde','boa noite'].some(g => t.includes(g));
+  // Saudações respondem normalmente independente de pendência aberta
   if (ehSaudacao) {
     const primeiroNome = paciente.nome.split(' ')[0];
     await enviar(numero,
