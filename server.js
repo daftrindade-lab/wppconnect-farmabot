@@ -155,26 +155,20 @@ function normalizarNumero(numero) {
 async function buscarPendenciaAberta(numero) {
   try {
     const num = normalizarNumero(numero);
-    // Busca conversa PENDENTE pelo número exato
+    // Busca conversa PENDENTE pelo número exato (inclui conversas de queixa)
     const res = await supaFetch(`farmabot_conversas?numero=eq.${num}&pendente=eq.true&order=criado_em.desc&limit=1`);
     if (Array.isArray(res) && res[0]) return res[0];
     // Tenta variação com/sem 9
     const numAlt = num.length === 11 ? num.slice(0,2) + num.slice(3) : num.slice(0,2) + '9' + num.slice(2);
     const res2 = await supaFetch(`farmabot_conversas?numero=eq.${numAlt}&pendente=eq.true&order=criado_em.desc&limit=1`);
     if (Array.isArray(res2) && res2[0]) return res2[0];
-    // Busca conversa das últimas 24h (mesmo resolvida) para continuar o diálogo
+    // Busca conversa das últimas 24h para continuar o diálogo
     const ontemISO = new Date(Date.now() - 24*60*60*1000).toISOString();
     const res3 = await supaFetch(`farmabot_conversas?numero=eq.${num}&criado_em=gte.${ontemISO}&order=criado_em.desc&limit=1`);
     if (Array.isArray(res3) && res3[0]) {
-      // Reabre a conversa
       await fetch(`${SUPA_URL}/rest/v1/farmabot_conversas?id=eq.${res3[0].id}`, {
         method: 'PATCH',
-        headers: {
-          'apikey': SUPA_KEY,
-          'Authorization': `Bearer ${SUPA_KEY}`,
-          'Content-Type': 'application/json',
-          'Prefer': 'return=minimal'
-        },
+        headers: { 'apikey': SUPA_KEY, 'Authorization': `Bearer ${SUPA_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
         body: JSON.stringify({ pendente: true })
       });
       return res3[0];
