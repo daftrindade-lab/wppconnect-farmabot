@@ -1116,10 +1116,11 @@ app.get('/cobertura', async (req, res) => {
   const token = req.headers['x-admin-token'];
   if (token !== ADMIN_TOKEN) return res.status(401).json({ erro: 'Não autorizado' });
   try {
-    const [pacientes, conversas, queixas, alertas] = await Promise.all([
+    const [pacientes, conversas, queixas, queixasTotal, alertas] = await Promise.all([
       supaFetch('farmabot_pacientes?select=id,ubs_nome,medicamentos,condicoes'),
       supaFetch('farmabot_conversas?pendente=eq.true&select=id,unidade'),
       supaFetch('farmabot_queixas?status=eq.pendente&select=id,ubs_nome'),
+      supaFetch('farmabot_queixas?select=id,ubs_nome'),
       supaFetch('farmabot_alertas_renovacao?status=eq.pendente&select=id,ubs_nome'),
     ]);
 
@@ -1127,13 +1128,13 @@ app.get('/cobertura', async (req, res) => {
     const mapa = {};
     const ubsList = await supaFetch('farmabot_ubs?select=nome_ubs&status=eq.ativo');
     (ubsList||[]).forEach(u => {
-      mapa[u.nome_ubs] = { ubs: u.nome_ubs, pacientes: 0, beers: 0, renovacoes: 0, conversas: 0, queixas: 0 };
+      mapa[u.nome_ubs] = { ubs: u.nome_ubs, pacientes: 0, beers: 0, renovacoes: 0, conversas: 0, queixas: 0, queixasTotal: 0 };
     });
 
     // Pacientes + Beers
     (Array.isArray(pacientes) ? pacientes : []).forEach(p => {
       if (!p.ubs_nome) return;
-      if (!mapa[p.ubs_nome]) mapa[p.ubs_nome] = { ubs: p.ubs_nome, pacientes: 0, beers: 0, renovacoes: 0, conversas: 0, queixas: 0 };
+      if (!mapa[p.ubs_nome]) mapa[p.ubs_nome] = { ubs: p.ubs_nome, pacientes: 0, beers: 0, renovacoes: 0, conversas: 0, queixas: 0, queixasTotal: 0 };
       mapa[p.ubs_nome].pacientes++;
       const beers = (p.medicamentos||[]).filter(m => m.beers_alerta).length;
       mapa[p.ubs_nome].beers += beers;
@@ -1147,6 +1148,11 @@ app.get('/cobertura', async (req, res) => {
     // Queixas pendentes
     (Array.isArray(queixas) ? queixas : []).forEach(q => {
       if (q.ubs_nome && mapa[q.ubs_nome]) mapa[q.ubs_nome].queixas++;
+    });
+
+    // Queixas totais (pendentes + já resolvidas) — histórico completo
+    (Array.isArray(queixasTotal) ? queixasTotal : []).forEach(q => {
+      if (q.ubs_nome && mapa[q.ubs_nome]) mapa[q.ubs_nome].queixasTotal++;
     });
 
     // Renovações pendentes
