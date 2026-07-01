@@ -114,7 +114,15 @@ async function supaFetch(path, opts = {}) {
       ...optsHeaders
     }
   });
-  return res.json();
+  // PATCH/DELETE sem header "Prefer: return=representation" voltam 204 (sem corpo).
+  // Tentar fazer .json() nesse caso quebra com "Unexpected end of JSON input".
+  const texto = await res.text();
+  if (!texto) return res.ok ? { ok: true } : { erro: `Supabase retornou ${res.status} sem corpo` };
+  try {
+    return JSON.parse(texto);
+  } catch {
+    return { erro: `Resposta inesperada do Supabase (status ${res.status}): ${texto.slice(0,200)}` };
+  }
 }
 
 // ── Identificar paciente por telefone ────────────────────────────────────────
