@@ -682,9 +682,10 @@ async function processarMensagem(numero, texto, t, paciente) {
   }
 
   if (pendenciaAberta && !ehSaudacao) {
-    // Mensagem de conteúdo — adiciona à conversa pendente
+    // Mensagem de conteúdo — apenas registra na conversa pendente, sem
+    // o bot interromper com confirmação. O farmacêutico já está ciente
+    // (vê a mensagem no painel) e responde diretamente por lá.
     await adicionarMsgPendencia(pendenciaAberta.id, texto, 'paciente');
-    await enviar(numero, '⏳ Sua mensagem foi adicionada ao atendimento em aberto com o farmacêutico da *' + (paciente.ubs_nome||'sua UBS') + '*.\n\nAssim que ele responder, você receberá uma mensagem aqui. Para urgências: SAMU 192.');
     return;
   }
 
